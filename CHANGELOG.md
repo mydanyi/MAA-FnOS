@@ -38,7 +38,6 @@
 
 ### 新增
 - 首个版本。把 MAA 官方 Linux 核心 + Web 前端打包成飞牛 fpk 应用：
-  - 纯套壳：不改上游一行业务代码
   - 内置离线镜像（gzip 压缩的 `docker save` 产物），安装时自动导入，**无需联网**
   - `cmd/main` 完整生命周期：`start` / `stop` / `status`
   - 数据持久化到 `${TRIM_PKGVAR}/maa-data`，卸载重装不丢
