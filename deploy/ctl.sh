@@ -3,7 +3,7 @@
 # 用法: bash ctl.sh start|stop|status|logs|rm
 set -euo pipefail
 
-NAME=maa-web-test
+NAME=maa-web
 
 case "${1:-status}" in
   start)

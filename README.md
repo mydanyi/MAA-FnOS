@@ -36,7 +36,7 @@ MAA 本身是桌面程序，没法直接塞进 NAS。我的做法是把这几样
     └─ docker run
         │
         ▼
-容器 maa-web-test（镜像 maa-web-control:local，1.15GB）
+容器 maa-web（镜像 maa-web-control:local，1.15GB）
   bash /app/run.sh → uvicorn :8000    宿主 18000 → 容器 8000
     ├─ MAA-WEB-CONTROL (FastAPI)      /app
     ├─ MaaCore v6.17.5                /opt/maa/libMaaCore.so
@@ -165,13 +165,15 @@ MAA-FnOS/
 
 ## 致谢
 
+引擎、界面、安卓环境都是现成的，我只是把它们拼到一起。
+
 - [MaaAssistantArknights](https://github.com/MaaAssistantArknights/MaaAssistantArknights) —— MAA 官方核心
-- MAA-WEB-CONTROL —— 网页前端
+- [MAA-WEB-CONTROL](https://github.com/KlN-4096/MAA-WEB-CONTROL) —— 网页控制台，界面和接口都来自这里
 - [redroid](https://github.com/remote-android/redroid-doc) —— 容器里的安卓
 
 ## 许可证
 
-[AGPL-3.0](LICENSE)，跟上游 MAA-WEB-CONTROL 保持一致。
+[AGPL-3.0](LICENSE)，跟上游 [MAA-WEB-CONTROL](https://github.com/KlN-4096/MAA-WEB-CONTROL) 保持一致。
 MaaCore 和游戏资源文件的版权归 MAA 项目所有，遵守它们各自的协议。
 
 ## 免责声明

@@ -1,4 +1,4 @@
-# MAA on Linux —— 纯套壳（不改 MAA-WEB-CONTROL 一行业务代码）
+# MAA on Linux —— 纯套壳
 # 组成：官方 MAA Linux 发布包（核心 + Python 绑定 + 资源） + 官方/社区 Web 前端（原样运行）
 # 基础镜像：Ubuntu 24.04（glibc 2.39）—— 满足官方 maa CLI 的 glibc>=2.38 要求
 FROM ubuntu:24.04

@@ -1,10 +1,12 @@
 #!/bin/bash
 # MAA on 飞牛 —— 纯套壳：用 Docker 拉起 MAA Web 控制台
 # 依赖：镜像 maa-web-control:local（由离线安装包内置导入）
-# 说明：不改 MAA-WEB-CONTROL 一行业务代码，只做进程/容器生命周期管理
+# 说明：只做进程/容器生命周期管理
 
 IMAGE="maa-web-control:local"
-CONTAINER="maa-web-test"
+CONTAINER="maa-web"
+# v1.0.3 之前的旧容器名，首次 start 时清理，避免占用宿主机端口
+LEGACY_CONTAINER="maa-web-test"
 HOST_PORT="18000"
 CONTAINER_PORT="8000"
 
@@ -40,6 +42,20 @@ check_docker() {
         write_user_error "Docker 服务未运行，请先启动 Docker。"
         return 1
     fi
+    return 0
+}
+
+# 清掉 v1.0.3 之前的旧容器（旧名 maa-web-test）
+# 必须做：新名字的容器要绑同一个宿主机端口 18000，
+# 旧容器不删掉会占着端口，导致新容器起不来。
+cleanup_legacy_container() {
+    local found
+    found="$(docker ps -a --filter "name=^${LEGACY_CONTAINER}$" --format '{{.Names}}' 2>/dev/null)"
+    [ -n "${found}" ] || return 0
+    log_msg "Found legacy container ${LEGACY_CONTAINER}, removing ..."
+    docker stop "${LEGACY_CONTAINER}" >> "${LOG_FILE}" 2>&1 || true
+    docker rm -f "${LEGACY_CONTAINER}" >> "${LOG_FILE}" 2>&1 || true
+    log_msg "Legacy container removed."
     return 0
 }
 
@@ -168,6 +184,7 @@ status() {
 
 start_process() {
     check_docker || return 1
+    cleanup_legacy_container
     ensure_image || return 1
     ensure_redroid_proxy || true
 
