@@ -1,0 +1,54 @@
+#!/bin/bash
+# 应用安装完成后：导入内置的 MAA Docker 镜像（离线，无需联网）
+# 镜像以 gzip 压缩形式放在 app/maa-image.tar.gz（减小 fpk 体积）
+# 导入时先解压到临时目录，docker load 后清理
+
+LOG_FILE="${TRIM_PKGVAR}/install.log"
+IMAGE="maa-web-control:local"
+TAR_GZ="${TRIM_APPDEST}/maa-image.tar.gz"
+TMP_TAR="${TRIM_PKGVAR}/maa-image.tar"
+
+log_msg() {
+    mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
+}
+
+write_user_error() {
+    echo "$1" > "${TRIM_TEMP_LOGFILE}"
+    log_msg "ERROR: $1"
+}
+
+log_msg "install_callback started. APPDEST=${TRIM_APPDEST}"
+
+if ! command -v docker >/dev/null 2>&1; then
+    write_user_error "未找到 docker，请先在应用中心安装 Docker。"
+    exit 0
+fi
+
+if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+    log_msg "Image already present, skip load."
+    exit 0
+fi
+
+if [ ! -f "${TAR_GZ}" ]; then
+    write_user_error "离线镜像包不存在：${TAR_GZ}"
+    exit 0
+fi
+
+log_msg "Decompressing ${TAR_GZ} -> ${TMP_TAR} ..."
+if ! gunzip -c "${TAR_GZ}" > "${TMP_TAR}" 2>> "${LOG_FILE}"; then
+    write_user_error "镜像解压失败，请查看 ${LOG_FILE}"
+    exit 0
+fi
+
+log_msg "Loading image (this may take a few minutes) ..."
+if docker load -i "${TMP_TAR}" >> "${LOG_FILE}" 2>&1; then
+    log_msg "Image loaded successfully."
+else
+    write_user_error "镜像导入失败，请查看 ${LOG_FILE}"
+fi
+
+# 清理临时 tar，节省空间（镜像已进 docker 存储）
+rm -f "${TMP_TAR}"
+
+exit 0

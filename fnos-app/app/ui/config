@@ -1,0 +1,13 @@
+{
+    ".url": {
+        "maa-web.Application": {
+            "title": "MAA",
+            "icon": "images/icon_{0}.png",
+            "type": "url",
+            "protocol": "http",
+            "port": "18000",
+            "url": "/",
+            "allUsers": false
+        }
+    }
+}

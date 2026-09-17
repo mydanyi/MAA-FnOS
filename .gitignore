@@ -1,0 +1,27 @@
+# 离线镜像：585MB，且 fpk 打包后约 613MB，远超 GitHub 单文件 100MB 上限
+# 请按 docs/构建指南.md 自行构建，不要提交进仓库
+fnos-app/app/maa-image.tar
+fnos-app/app/maa-image.tar.gz
+*.fpk
+
+# 上游源码与产物（外部下载，见构建指南）
+MAA-WEB-CONTROL-master/
+maa-linux.tar.gz
+
+# 运行期数据（不应进版本库）
+maa-data/
+*.log
+
+# 本地调试/凭据（绝不要提交）
+tools/local/
+*.pem
+.env
+.env.*
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+__pycache__/
+*.py[cod]

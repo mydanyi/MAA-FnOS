@@ -1,0 +1,235 @@
+#!/bin/bash
+# MAA on 飞牛 —— 纯套壳：用 Docker 拉起 MAA Web 控制台
+# 依赖：镜像 maa-web-control:local（由离线安装包内置导入）
+# 说明：不改 MAA-WEB-CONTROL 一行业务代码，只做进程/容器生命周期管理
+
+IMAGE="maa-web-control:local"
+CONTAINER="maa-web-test"
+HOST_PORT="18000"
+CONTAINER_PORT="8000"
+
+# redroid 状态查询代理（宿主机侧）
+REDROID_PROXY_HOST="172.17.0.1"
+REDROID_PROXY_PORT="18001"
+REDROID_PROXY_PY="${TRIM_APPDEST}/redroid_status_proxy.py"
+REDROID_PROXY_LOG="${TRIM_PKGVAR}/redroid-proxy.log"
+
+LOG_FILE="${TRIM_PKGVAR}/info.log"
+PID_FILE="${TRIM_PKGVAR}/app.pid"
+
+# 应用数据目录（持久化：任务配置/日志/profile）
+DATA_DIR="${TRIM_PKGVAR}/maa-data"
+
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"
+}
+
+# 把错误暴露到飞牛应用中心界面
+write_user_error() {
+    echo "$1" > "${TRIM_TEMP_LOGFILE}"
+    log_msg "ERROR: $1"
+}
+
+# 检查 docker 是否可用
+check_docker() {
+    if ! command -v docker >/dev/null 2>&1; then
+        write_user_error "未找到 docker，请在应用中心安装 Docker 后重试。"
+        return 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        write_user_error "Docker 服务未运行，请先启动 Docker。"
+        return 1
+    fi
+    return 0
+}
+
+# ---- 镜像指纹文件 ----
+# 记录已导入镜像的 docker image ID，用于升级时判断是否需要重新导入。
+# 只比对「同名镜像是否存在」是不够的：升级后旧镜像仍在，新包永远不会被 load。
+IMAGE_ID_FILE="${TRIM_APPDEST}/maa-image.id"
+
+# 记录当前镜像指纹，供下次启动做版本比对
+record_image_id() {
+    local id
+    id="$(docker image inspect --format '{{.Id}}' "${IMAGE}" 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "${id}" ]; then
+        echo "${id}" > "${IMAGE_ID_FILE}" 2>/dev/null || true
+        log_msg "Recorded image id: ${id}"
+    fi
+}
+
+# 镜像是否已就绪
+image_ready() {
+    docker image inspect "${IMAGE}" >/dev/null 2>&1 || return 1
+    # 没有指纹文件时，退化为「存在即可用」（首次安装兼容）
+    [ -f "${IMAGE_ID_FILE}" ] || return 0
+    local want current
+    want="$(cat "${IMAGE_ID_FILE}" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "${want}" ] || return 0
+    current="$(docker image inspect --format '{{.Id}}' "${IMAGE}" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "${current}" ] || return 1
+    # docker 的 .Id 带 sha256: 前缀，指纹文件里也按完整值存
+    if [ "${current}" = "${want}" ] || [ "${current#sha256:}" = "${want#sha256:}" ]; then
+        return 0
+    fi
+    log_msg "Image id mismatch (have=${current}, want=${want}) -> will reload."
+    return 1
+}
+
+ensure_image() {
+    if image_ready; then
+        return 0
+    fi
+
+    # 指纹不符时，先移除旧镜像，避免 load 后 tag 被旧镜像占用
+    if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
+        log_msg "Removing stale image ${IMAGE} ..."
+        docker rmi -f "${IMAGE}" >> "${LOG_FILE}" 2>&1 || true
+    fi
+
+    # 离线包（gzip 压缩）：app/maa-image.tar.gz
+    local tgz="${TRIM_APPDEST}/maa-image.tar.gz"
+    if [ -f "${tgz}" ]; then
+        local tmp_tar="${TRIM_PKGVAR}/maa-image.tar"
+        log_msg "Decompressing ${tgz} ..."
+        if ! gunzip -c "${tgz}" > "${tmp_tar}" 2>> "${LOG_FILE}"; then
+            write_user_error "镜像解压失败，请查看日志 ${LOG_FILE}"
+            return 1
+        fi
+        log_msg "Loading image ..."
+        if docker load -i "${tmp_tar}" >> "${LOG_FILE}" 2>&1; then
+            rm -f "${tmp_tar}"
+            record_image_id
+            log_msg "Image loaded."
+            return 0
+        fi
+        rm -f "${tmp_tar}"
+        write_user_error "镜像导入失败，请查看日志 ${LOG_FILE}"
+        return 1
+    fi
+
+    # 兼容未压缩形式
+    local tar="${TRIM_APPDEST}/maa-image.tar"
+    if [ -f "${tar}" ]; then
+        log_msg "Loading image from ${tar} ..."
+        if docker load -i "${tar}" >> "${LOG_FILE}" 2>&1; then
+            record_image_id
+            log_msg "Image loaded."
+            return 0
+        fi
+        write_user_error "镜像导入失败，请查看日志 ${LOG_FILE}"
+        return 1
+    fi
+
+    write_user_error "未找到镜像 ${IMAGE}，且离线包不存在。"
+    return 1
+}
+
+# 确保 redroid 状态代理在宿主机侧运行
+# 说明：MAA 的「检查 redroid 容器」功能需要查询宿主机上的容器状态。
+# 这里启动一个只读代理（仅支持 inspect 查询），容器内通过它获取状态，
+# 从而避免把 docker.sock 直接挂进容器（最小权限原则）。
+ensure_redroid_proxy() {
+    # 已监听则直接返回
+    if curl -s --max-time 2 "http://${REDROID_PROXY_HOST}:${REDROID_PROXY_PORT}/inspect?name=__probe__" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if [ ! -f "${REDROID_PROXY_PY}" ]; then
+        log_msg "redroid proxy script not found: ${REDROID_PROXY_PY} (skip)"
+        return 0
+    fi
+
+    log_msg "Starting redroid status proxy on ${REDROID_PROXY_HOST}:${REDROID_PROXY_PORT} ..."
+    setsid nohup python3 "${REDROID_PROXY_PY}" > "${REDROID_PROXY_LOG}" 2>&1 < /dev/null &
+    sleep 1
+
+    if curl -s --max-time 2 "http://${REDROID_PROXY_HOST}:${REDROID_PROXY_PORT}/inspect?name=__probe__" >/dev/null 2>&1; then
+        log_msg "redroid proxy started."
+    else
+        log_msg "WARN: redroid proxy failed to start (功能可能不可用，不影响主功能)"
+    fi
+    return 0
+}
+
+# 容器是否在运行
+status_container() {
+    docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' 2>/dev/null | grep -q "${CONTAINER}"
+}
+
+status() {
+    if [ -f "${PID_FILE}" ] || status_container; then
+        if status_container; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+start_process() {
+    check_docker || return 1
+    ensure_image || return 1
+    ensure_redroid_proxy || true
+
+    if status_container; then
+        log_msg "Container already running."
+        return 0
+    fi
+
+    # 清掉同名的停止态容器
+    docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
+
+    mkdir -p "${DATA_DIR}" 2>/dev/null || true
+
+    log_msg "Starting container ${CONTAINER} ..."
+    docker run -d --name "${CONTAINER}" \
+        --restart no \
+        -p "${HOST_PORT}:${CONTAINER_PORT}" \
+        -e MAA_ADAPTER=official \
+        -e MAA_CORE_DIR=/opt/maa \
+        -e MAA_WEB_HOST=0.0.0.0 \
+        -e MAA_WEB_PORT="${CONTAINER_PORT}" \
+        -e TZ=Asia/Shanghai \
+        -e REDROID_PROXY_HOST="${REDROID_PROXY_HOST}" \
+        -e REDROID_PROXY_PORT="${REDROID_PROXY_PORT}" \
+        -v "${DATA_DIR}:/app/data" \
+        "${IMAGE}" >> "${LOG_FILE}" 2>&1
+
+    sleep 3
+    if status_container; then
+        log_msg "Container started: ${CONTAINER} (0.0.0.0:${HOST_PORT})"
+        return 0
+    fi
+
+    write_user_error "MAA 容器启动失败，请查看日志 ${LOG_FILE}"
+    return 1
+}
+
+stop_process() {
+    log_msg "Stopping container ${CONTAINER} ..."
+    docker stop "${CONTAINER}" >> "${LOG_FILE}" 2>&1 || true
+    docker rm -f "${CONTAINER}" >> "${LOG_FILE}" 2>&1 || true
+    rm -f "${PID_FILE}"
+    log_msg "Container stopped."
+    return 0
+}
+
+case "$1" in
+start)
+    start_process
+    ;;
+stop)
+    stop_process
+    ;;
+status)
+    if status; then
+        exit 0
+    else
+        exit 3
+    fi
+    ;;
+*)
+    echo "Unknown command: $1" > "${TRIM_TEMP_LOGFILE}"
+    exit 1
+    ;;
+esac
