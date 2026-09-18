@@ -233,8 +233,7 @@ MAA-FnOS/
 │       └── ui/          桌面图标和入口配置
 ├── redroid-proxy/       容器内的假 docker + 宿主的只读代理
 ├── deploy/              不走飞牛时的独立 Docker 部署方式
-├── docs/                构建指南
-└── tools/               几个运维小脚本
+└── docs/                构建指南
 ```
 
 ## 配置
