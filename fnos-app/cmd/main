@@ -59,29 +59,58 @@ cleanup_legacy_container() {
     return 0
 }
 
-# ---- 镜像指纹文件 ----
-# 记录已导入镜像的 docker image ID，用于升级时判断是否需要重新导入。
-# 只比对「同名镜像是否存在」是不够的：升级后旧镜像仍在，新包永远不会被 load。
+# ---- 镜像指纹（期望值必须来自包内，不能来自运行时残留）----
+# 只比对「同名镜像是否存在」是不够的：升级后旧镜像仍在，新包里的镜像永远不会被 load。
+# 但光有指纹文件也不够 —— 它若被卸载清掉，比对就退化成了「存在即可用」，问题原样复现。
+# 所以：期望值一律从包内的镜像包推导，缺失就现场重新推导，不留任何静默退化分支。
 IMAGE_ID_FILE="${TRIM_APPDEST}/maa-image.id"
+IMAGE_TGZ="${TRIM_APPDEST}/maa-image.tar.gz"
+IMAGE_TAR="${TRIM_APPDEST}/maa-image.tar"
 
-# 记录当前镜像指纹，供下次启动做版本比对
-record_image_id() {
-    local id
-    id="$(docker image inspect --format '{{.Id}}' "${IMAGE}" 2>/dev/null | tr -d '[:space:]')"
-    if [ -n "${id}" ]; then
-        echo "${id}" > "${IMAGE_ID_FILE}" 2>/dev/null || true
-        log_msg "Recorded image id: ${id}"
-    fi
+# 从离线镜像包里推导镜像 ID
+# 原理：docker save 产物的 manifest.json 里，Config 指向的摘要就是镜像 ID。
+# manifest.json 位于 tar 开头，实测约 2 秒。
+derive_image_id() {
+    local src="$1" config
+    [ -f "${src}" ] || return 1
+    case "${src}" in
+        *.gz) config="$(gunzip -c "${src}" 2>/dev/null | tar -xO manifest.json 2>/dev/null)" ;;
+        *)    config="$(tar -xO manifest.json -f "${src}" 2>/dev/null)" ;;
+    esac
+    config="$(printf '%s' "${config}" | tr -d '\n' | grep -oE '"Config":"[^"]+"' | head -1 | sed 's/"Config":"//; s/"//')"
+    [ -n "${config}" ] || return 1
+    printf 'sha256:%s\n' "$(basename "${config}")"
 }
 
-# 镜像是否已就绪
+# 从包内镜像包推导期望指纹并落盘
+write_expected_id() {
+    local id
+    id="$(derive_image_id "${IMAGE_TGZ}")" || id="$(derive_image_id "${IMAGE_TAR}")" || id=""
+    if [ -z "${id}" ]; then
+        return 1
+    fi
+    printf '%s\n' "${id}" > "${IMAGE_ID_FILE}" 2>/dev/null || true
+    log_msg "Expected image id from package: ${id}"
+    return 0
+}
+
+# 确保期望指纹存在；缺失就现场推导（自愈，用于首次安装或指纹被清掉的情况）
+ensure_expected_id() {
+    [ -s "${IMAGE_ID_FILE}" ] && return 0
+    write_expected_id || {
+        log_msg "WARN: 既没有 ${IMAGE_ID_FILE}，也无法从镜像包推导，只能重新导入。"
+        return 1
+    }
+    return 0
+}
+
+# 镜像是否已就绪：已加载，且 ID 与包内期望值一致
 image_ready() {
     docker image inspect "${IMAGE}" >/dev/null 2>&1 || return 1
-    # 没有指纹文件时，退化为「存在即可用」（首次安装兼容）
-    [ -f "${IMAGE_ID_FILE}" ] || return 0
+    ensure_expected_id || return 1
     local want current
-    want="$(cat "${IMAGE_ID_FILE}" 2>/dev/null | tr -d '[:space:]')"
-    [ -n "${want}" ] || return 0
+    want="$(tr -d '[:space:]' < "${IMAGE_ID_FILE}" 2>/dev/null)"
+    [ -n "${want}" ] || return 1
     current="$(docker image inspect --format '{{.Id}}' "${IMAGE}" 2>/dev/null | tr -d '[:space:]')"
     [ -n "${current}" ] || return 1
     # docker 的 .Id 带 sha256: 前缀，指纹文件里也按完整值存
@@ -104,18 +133,18 @@ ensure_image() {
     fi
 
     # 离线包（gzip 压缩）：app/maa-image.tar.gz
-    local tgz="${TRIM_APPDEST}/maa-image.tar.gz"
-    if [ -f "${tgz}" ]; then
+    if [ -f "${IMAGE_TGZ}" ]; then
         local tmp_tar="${TRIM_PKGVAR}/maa-image.tar"
-        log_msg "Decompressing ${tgz} ..."
-        if ! gunzip -c "${tgz}" > "${tmp_tar}" 2>> "${LOG_FILE}"; then
+        log_msg "Decompressing ${IMAGE_TGZ} ..."
+        if ! gunzip -c "${IMAGE_TGZ}" > "${tmp_tar}" 2>> "${LOG_FILE}"; then
             write_user_error "镜像解压失败，请查看日志 ${LOG_FILE}"
             return 1
         fi
         log_msg "Loading image ..."
         if docker load -i "${tmp_tar}" >> "${LOG_FILE}" 2>&1; then
             rm -f "${tmp_tar}"
-            record_image_id
+            # 导入成功后就地刷新期望指纹，保证与刚装进来的镜像一致
+            write_expected_id || true
             log_msg "Image loaded."
             return 0
         fi
@@ -125,11 +154,10 @@ ensure_image() {
     fi
 
     # 兼容未压缩形式
-    local tar="${TRIM_APPDEST}/maa-image.tar"
-    if [ -f "${tar}" ]; then
-        log_msg "Loading image from ${tar} ..."
-        if docker load -i "${tar}" >> "${LOG_FILE}" 2>&1; then
-            record_image_id
+    if [ -f "${IMAGE_TAR}" ]; then
+        log_msg "Loading image from ${IMAGE_TAR} ..."
+        if docker load -i "${IMAGE_TAR}" >> "${LOG_FILE}" 2>&1; then
+            write_expected_id || true
             log_msg "Image loaded."
             return 0
         fi

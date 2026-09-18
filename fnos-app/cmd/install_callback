@@ -1,12 +1,16 @@
 #!/bin/bash
 # 应用安装完成后：导入内置的 MAA Docker 镜像（离线，无需联网）
 # 镜像以 gzip 压缩形式放在 app/maa-image.tar.gz（减小 fpk 体积）
-# 导入时先解压到临时目录，docker load 后清理
+#
+# 判断"要不要导入"用的必须是**镜像指纹**，不能是"同名镜像在不在"。
+# 只看名字的话：升级包里明明换了镜像，也会被判定成"已存在"而跳过导入，
+# 装完之后跑的其实还是旧镜像 —— 而且全程没有任何报错。
 
 LOG_FILE="${TRIM_PKGVAR}/install.log"
 IMAGE="maa-web-control:local"
 TAR_GZ="${TRIM_APPDEST}/maa-image.tar.gz"
 TMP_TAR="${TRIM_PKGVAR}/maa-image.tar"
+ID_FILE="${TRIM_APPDEST}/maa-image.id"
 
 log_msg() {
     mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
@@ -25,27 +29,56 @@ if ! command -v docker >/dev/null 2>&1; then
     exit 0
 fi
 
-if docker image inspect "${IMAGE}" >/dev/null 2>&1; then
-    log_msg "Image already present, skip load."
-    exit 0
-fi
-
 if [ ! -f "${TAR_GZ}" ]; then
     write_user_error "离线镜像包不存在：${TAR_GZ}"
     exit 0
 fi
 
+# 期望指纹直接取自包内的镜像包本身：
+# docker save 产物的 manifest.json 里，Config 指向的摘要就是镜像 ID。
+# 这样指纹永远反映"这个包里应该是哪个镜像"，不受上次运行残留的状态影响。
+log_msg "Reading image id from ${TAR_GZ} ..."
+CONFIG="$(gunzip -c "${TAR_GZ}" 2>/dev/null | tar -xO manifest.json 2>/dev/null \
+    | tr -d '\n' | grep -oE '"Config":"[^"]+"' | head -1 | sed 's/"Config":"//; s/"//')"
+if [ -z "${CONFIG}" ]; then
+    write_user_error "无法从 ${TAR_GZ} 解析镜像信息，请查看日志 ${LOG_FILE}"
+    exit 0
+fi
+EXPECT_ID="sha256:$(basename "${CONFIG}")"
+printf '%s\n' "${EXPECT_ID}" > "${ID_FILE}" 2>/dev/null || true
+log_msg "Expected image id: ${EXPECT_ID}"
+
+# 已加载的镜像与期望一致，才是真的可以跳过
+CUR_ID="$(docker image inspect --format '{{.Id}}' "${IMAGE}" 2>/dev/null | tr -d '[:space:]')"
+if [ -n "${CUR_ID}" ] && { [ "${CUR_ID}" = "${EXPECT_ID}" ] || [ "${CUR_ID#sha256:}" = "${EXPECT_ID#sha256:}" ]; }; then
+    log_msg "Image already loaded and id matches, skip load."
+    exit 0
+fi
+
+# 不一致：先摘掉旧 tag，否则 load 进来只会把旧镜像挤成悬空镜像
+if [ -n "${CUR_ID}" ]; then
+    log_msg "Image id mismatch (have=${CUR_ID}) -> removing stale image before load."
+    docker rmi -f "${IMAGE}" >> "${LOG_FILE}" 2>&1 || true
+fi
+
 log_msg "Decompressing ${TAR_GZ} -> ${TMP_TAR} ..."
 if ! gunzip -c "${TAR_GZ}" > "${TMP_TAR}" 2>> "${LOG_FILE}"; then
-    write_user_error "镜像解压失败，请查看 ${LOG_FILE}"
+    write_user_error "镜像解压失败，请查看日志 ${LOG_FILE}"
     exit 0
 fi
 
 log_msg "Loading image (this may take a few minutes) ..."
 if docker load -i "${TMP_TAR}" >> "${LOG_FILE}" 2>&1; then
     log_msg "Image loaded successfully."
+    # 复核一次：导入后的实际 ID 必须等于期望值，否则说明包本身有问题
+    AFTER_ID="$(docker image inspect --format '{{.Id}}' "${IMAGE}" 2>/dev/null | tr -d '[:space:]')"
+    if [ "${AFTER_ID}" = "${EXPECT_ID}" ]; then
+        log_msg "Verified: loaded image id matches expected."
+    else
+        log_msg "WARN: loaded image id ${AFTER_ID} does not match expected ${EXPECT_ID}."
+    fi
 else
-    write_user_error "镜像导入失败，请查看 ${LOG_FILE}"
+    write_user_error "镜像导入失败，请查看日志 ${LOG_FILE}"
 fi
 
 # 清理临时 tar，节省空间（镜像已进 docker 存储）
