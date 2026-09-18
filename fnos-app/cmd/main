@@ -13,8 +13,10 @@ CONTAINER_PORT="8000"
 # 健康探活：容器在 ≠ 服务在。
 # 容器跑着但服务卡死/端口不通时，应用中心应当看到"异常"，而不是一直显示"运行中"。
 HEALTH_CHECK_URL="http://127.0.0.1:${HOST_PORT}/api/status"
-HEALTH_TIMEOUT="2"   # 探活超时（秒）
-HEALTH_GRACE="30"    # 容器起来后的宽限秒数；期内不探活（服务还没 listen，探了必然误报）
+HEALTH_TIMEOUT="2"    # 探活超时（秒）
+HEALTH_GRACE="30"     # 容器起来后的宽限秒数；期内不探活（服务还没 listen，探了必然误报）
+HEALTH_WARN_THROTTLE="60"  # 探活失败的 WARN 日志节流窗口（秒）
+HEALTH_WARN_STAMP="${TRIM_PKGVAR}/health-warn.ts"
 
 # redroid 状态查询代理（宿主机侧）
 REDROID_PROXY_HOST="172.17.0.1"
@@ -219,6 +221,25 @@ container_uptime() {
     printf '%s\n' "$(( $(date +%s) - secs ))"
 }
 
+# 探活失败的 WARN 日志要不要写：HEALTH_WARN_THROTTLE 秒内只写一条。
+# 应用中心会高频轮询 status（几秒一次），服务一旦卡死，
+# 不节流会把 info.log 一直刷下去。
+should_log_health_warn() {
+    local now last=0
+    now="$(date +%s)"
+    if [ -f "${HEALTH_WARN_STAMP}" ]; then
+        # 落盘时带了换行，这里 read 正常返回 0
+        read -r last < "${HEALTH_WARN_STAMP}" 2>/dev/null
+    fi
+    case "${last}" in ''|*[!0-9]*) last=0 ;; esac
+    if [ "${last}" -gt 0 ] && [ "$((now - last))" -lt "${HEALTH_WARN_THROTTLE}" ]; then
+        return 1
+    fi
+    # 写不进去（目录只读等）就退化成"每条都记"，不影响判活
+    printf '%s\n' "${now}" > "${HEALTH_WARN_STAMP}" 2>/dev/null || true
+    return 0
+}
+
 # 应用是否健康：容器在运行，且服务真的响应
 # 注意 PID_FILE 是死代码（全仓库只 rm、从不写），原先那个判断恒为假，
 # 等价于只看 status_container —— 容器在但服务死了照样报"运行中"。
@@ -226,8 +247,19 @@ status() {
     status_container || return 1
 
     local up
-    if up="$(container_uptime)" && [ "${up}" -lt "${HEALTH_GRACE}" ]; then
-        # 启动宽限期内不探活，直接认为健康
+    if ! up="$(container_uptime)"; then
+        # 拿不到启动时间（docker inspect 异常）就无从判断是否还在宽限期内。
+        # 宁可不探活也不误报：容器明明在跑却报"异常"，比漏报更扰人。
+        # （注意不能写成 `up="$(...)" && [ ... ]`：那样取不到时会短路成假，
+        #   反而继续去探活，正好在服务还没起来时报错。）
+        return 0
+    fi
+
+    if [ "${up}" -lt "${HEALTH_GRACE}" ]; then
+        # 启动宽限期内不探活，直接认为健康。
+        # 局限：宽限期看的是**容器**的启动时间，不是**服务**的就绪时间。
+        # 容器已经跑了很久、服务进程在容器内自己重启的那几秒，宽限期帮不上忙，
+        # 会短暂误报"异常"，等服务起来就自愈。
         return 0
     fi
 
@@ -235,7 +267,9 @@ status() {
         return 0
     fi
 
-    log_msg "WARN: container ${CONTAINER} is running but ${HEALTH_CHECK_URL} is not responding (uptime=${up:-unknown}s)."
+    if should_log_health_warn; then
+        log_msg "WARN: container ${CONTAINER} is running but ${HEALTH_CHECK_URL} is not responding (uptime=${up}s)."
+    fi
     return 1
 }
 
