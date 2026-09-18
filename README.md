@@ -123,6 +123,44 @@ sudo appcenter-cli install-fpk --volume 1 maa-web.fpk
 
 官方 MAA 包要求 glibc ≥ 2.38，基础镜像得用 Ubuntu 24.04 或更新的。
 
+## 不用飞牛：直接跑 Docker
+
+不装 fpk 也行。`deploy/` 里就是独立部署那一套，单容器，一个 compose 起：
+
+| 文件 | 干什么的 |
+|---|---|
+| `deploy/Dockerfile` | 镜像定义：Ubuntu 24.04 + MAA 官方 Linux 包 + MAA-WEB-CONTROL（原样） |
+| `deploy/docker-compose.yml` | 单服务 compose，端口 `18000:8000`，数据挂在卷 `maa-data` |
+| `deploy/ctl.sh` | 不想用 compose 就用它，等价的 `docker run` 写法 |
+| `deploy/build.sh` | 只负责构建镜像（里面的目录变量要改成自己的） |
+
+compose 里的 `build:` 指的就是同一个 Dockerfile，所以不用先手工 build 一遍。
+
+跟 fpk 的区别：fpk 走飞牛应用框架，能在应用中心安装启停、有桌面图标，数据在
+`/vol1/@appdata/maa-web/maa-data`；compose 就是个普通容器，数据在 Docker 卷里，
+应用中心看不到它。
+
+### 起法
+
+Dockerfile 要的构建上下文里有三样上游产物，所以不能在本仓库里直接 `up`，
+得先按 [docs/构建指南.md](docs/构建指南.md) 把上下文拼出来：
+
+```bash
+mkdir -p ~/maa-build && cd ~/maa-build
+cp -r /path/to/MAA-FnOS/deploy .          # Dockerfile 和 compose 都在里面
+cp -r /path/to/MAA-FnOS/redroid-proxy .   # Dockerfile 要 COPY 它
+cp /path/to/maa-linux.tar.gz .
+cp -r /path/to/MAA-WEB-CONTROL-master .
+
+docker compose up -d --build
+```
+
+起来的地址一样是 `http://<宿主机IP>:18000/`。
+
+还有一步：容器里那个「检查 redroid 容器」要能用，得在**宿主**上跑状态代理
+（`redroid-proxy/redroid_status_proxy.py`，监听 `172.17.0.1:18001`）。
+fpk 那边是 `cmd/main` 顺手拉起来的，compose 这条路得自己起。
+
 ## 目录
 
 ```
