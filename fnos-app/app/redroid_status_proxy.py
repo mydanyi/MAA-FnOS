@@ -12,8 +12,13 @@ MAA redroid 状态查询代理（宿主机侧）
   返回 JSON: {"ok":true,"status":"running","running":true} 或 {"ok":false,"error":"..."}
 
 仅接受白名单内的容器名（默认允许名字里含 redroid 的容器）。
+
+前端的「检查 redroid 容器」固定用默认名 `redroid` 查询，而实际容器名往往不是它。
+可用环境变量 MAA_REDROID_CONTAINER 显式指定；不指定时，默认名查不到会自动落到
+本机第一个名字含 redroid 的容器上。
 """
 import json
+import os
 import re
 import subprocess
 import sys
@@ -32,9 +37,68 @@ ALLOW_PATTERNS = [
 # 单次 docker 调用超时
 DOCKER_TIMEOUT = 5
 
+# 自动发现时只认这一条：名字里含 redroid 的容器
+DISCOVER_PATTERN = re.compile(r"redroid", re.I)
+
+# 上游的「检查 redroid 容器」按钮不带容器名，固定用这个默认值查询。
+DEFAULT_QUERY_NAME = "redroid"
+
+# 显式指定优先：设了就只用它，不做自动发现。
+OVERRIDE_NAME = (os.environ.get("MAA_REDROID_CONTAINER") or "").strip()
+
 
 def name_allowed(name: str) -> bool:
     return any(p.search(name) for p in ALLOW_PATTERNS)
+
+
+def inspect_container(name: str):
+    """查询单个容器状态，返回 (ok, status, running, error)。"""
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Status}}|{{.State.Running}}", name],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=DOCKER_TIMEOUT,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "", False, "docker inspect 超时"
+    except FileNotFoundError:
+        return False, "", False, "宿主机未找到 docker 命令"
+    except Exception as exc:  # pragma: no cover - 兜底
+        return False, "", False, f"inspect 异常: {exc}"
+
+    if result.returncode != 0:
+        return False, "", False, (result.stderr or "").strip() or "docker inspect 失败"
+
+    state = (result.stdout or "").strip()
+    status, _, running = state.partition("|")
+    return True, status or "unknown", running.strip().lower() == "true", ""
+
+
+def discover_container() -> str:
+    """挑一个名字含 redroid 的容器，取 `docker ps -a` 顺序里的第一个。"""
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=DOCKER_TIMEOUT,
+            check=False,
+        )
+    except Exception:  # pragma: no cover - 兜底
+        return ""
+    if result.returncode != 0:
+        return ""
+    for line in (result.stdout or "").splitlines():
+        candidate = line.strip()
+        if candidate and DISCOVER_PATTERN.search(candidate):
+            return candidate
+    return ""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -64,39 +128,31 @@ class Handler(BaseHTTPRequestHandler):
             self._json(403, {"ok": False, "error": "container not allowed"})
             return
 
-        try:
-            result = subprocess.run(
-                ["docker", "inspect", "--format", "{{.State.Status}}|{{.State.Running}}", name],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=DOCKER_TIMEOUT,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            self._json(200, {"ok": False, "error": "docker inspect 超时"})
-            return
-        except FileNotFoundError:
-            self._json(200, {"ok": False, "error": "宿主机未找到 docker 命令"})
-            return
-        except Exception as exc:  # pragma: no cover - 兜底
-            self._json(200, {"ok": False, "error": f"inspect 异常: {exc}"})
-            return
+        looked_up = name
+        ok, status, running, err = inspect_container(name)
 
-        if result.returncode != 0:
-            err = (result.stderr or "").strip()
+        # 默认名查不到时做一次兜底解析：显式指定优先，其次自动找一个名字含 redroid 的容器
+        if not ok and name == DEFAULT_QUERY_NAME:
+            fallback = OVERRIDE_NAME if (OVERRIDE_NAME and name_allowed(OVERRIDE_NAME)) else ""
+            if not fallback:
+                fallback = discover_container()
+            if fallback and fallback != name:
+                ok2, status2, running2, err2 = inspect_container(fallback)
+                if ok2:
+                    ok, status, running, err = ok2, status2, running2, err2
+                    looked_up = fallback
+
+        if not ok:
             self._json(200, {"ok": False, "error": err or "docker inspect 失败"})
             return
 
-        state = (result.stdout or "").strip()
-        status, _, running = state.partition("|")
         self._json(
             200,
             {
                 "ok": True,
-                "status": status or "unknown",
-                "running": running.strip().lower() == "true",
+                "container": looked_up,
+                "status": status,
+                "running": running,
             },
         )
 
