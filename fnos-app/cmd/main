@@ -246,21 +246,23 @@ should_log_health_warn() {
 status() {
     status_container || return 1
 
-    local up
-    if ! up="$(container_uptime)"; then
-        # 拿不到启动时间（docker inspect 异常）就无从判断是否还在宽限期内。
-        # 宁可不探活也不误报：容器明明在跑却报"异常"，比漏报更扰人。
-        # （注意不能写成 `up="$(...)" && [ ... ]`：那样取不到时会短路成假，
-        #   反而继续去探活，正好在服务还没起来时报错。）
-        return 0
-    fi
-
-    if [ "${up}" -lt "${HEALTH_GRACE}" ]; then
-        # 启动宽限期内不探活，直接认为健康。
-        # 局限：宽限期看的是**容器**的启动时间，不是**服务**的就绪时间。
-        # 容器已经跑了很久、服务进程在容器内自己重启的那几秒，宽限期帮不上忙，
-        # 会短暂误报"异常"，等服务起来就自愈。
-        return 0
+    local up detail
+    if up="$(container_uptime)"; then
+        if [ "${up}" -lt "${HEALTH_GRACE}" ]; then
+            # 启动宽限期内不探活，直接认为健康。
+            # 局限：宽限期看的是**容器**的启动时间，不是**服务**的就绪时间。
+            # 容器已经跑了很久、服务进程在容器内自己重启的那几秒，宽限期帮不上忙，
+            # 会短暂误报"异常"，等服务起来就自愈。
+            return 0
+        fi
+        detail="uptime=${up}s"
+    else
+        # 拿不到启动时间。容器明明在跑，StartedAt 本不该缺，属异常情况。
+        # 这里**不能**直接返回健康：docker inspect 持续失败时若一律豁免探活，
+        # 服务卡死就会被应用中心永久显示成"运行中"，
+        # 恰好绕开本 PR 想解决的"容器在 ≠ 服务在"。
+        # 所以退化成照样探活，由 HTTP 结果给结论；失败日志已有节流，不会刷屏。
+        detail="uptime=unknown, docker inspect failed"
     fi
 
     if curl -sf -o /dev/null --max-time "${HEALTH_TIMEOUT}" "${HEALTH_CHECK_URL}" 2>/dev/null; then
@@ -268,7 +270,7 @@ status() {
     fi
 
     if should_log_health_warn; then
-        log_msg "WARN: container ${CONTAINER} is running but ${HEALTH_CHECK_URL} is not responding (uptime=${up}s)."
+        log_msg "WARN: container ${CONTAINER} is running but ${HEALTH_CHECK_URL} is not responding (${detail})."
     fi
     return 1
 }
