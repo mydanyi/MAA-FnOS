@@ -18,7 +18,7 @@ MAA 本身是桌面程序，没法直接塞进 NAS。我的做法是把这几样
 | MaaCore | MAA 官方 Linux 版 | 真正干活的引擎，认图、判断、决策 |
 | MAA-WEB-CONTROL | 社区的 Web 前端 | 浏览器界面和接口 |
 | adb + MaaTouch | 系统包 + MAA 资源 | 连安卓端截图、模拟点击 |
-| redroid | 安卓容器 | 跑游戏的安卓环境（要自己先准备好） |
+| redroid | [ERSTT/redroid](https://github.com/ERSTT/redroid) 的 `erstt/redroid:13.0.0_ndk_ChromeOS` | 跑游戏的安卓环境（要自己先准备好） |
 | fpk 外壳 | 这个仓库 | 把镜像导进 Docker，管容器的启停 |
 
 ## 架构
@@ -56,7 +56,8 @@ MAA 本身是桌面程序，没法直接塞进 NAS。我的做法是把这几样
 
 - 飞牛 fnOS，版本 1.1.3100 以上，装好 Docker
 - x86_64 架构的机器
-- 一个能用的安卓环境。我用的是 redroid 容器，任何能被 `adb connect` 连上的安卓设备或模拟器都可以
+- 一个能用的安卓环境。我用的是 redroid 容器，镜像是 `erstt/redroid:13.0.0_ndk_ChromeOS`，
+  怎么起见下面的[安卓环境](#安卓环境redroid)；任何能被 `adb connect` 连上的安卓设备或模拟器也都可以
 - 大概 3GB 硬盘（镜像 1.15GB + 安装包 585MB + 运行数据）
 
 ## 安装
@@ -161,6 +162,65 @@ docker compose up -d --build
 （`redroid-proxy/redroid_status_proxy.py`，监听 `172.17.0.1:18001`）。
 fpk 那边是 `cmd/main` 顺手拉起来的，compose 这条路得自己起。
 
+## 安卓环境：redroid
+
+MAA 得有个安卓端才能干活，我用的是容器化的安卓：
+
+| 项 | 值 |
+|---|---|
+| 镜像 | `erstt/redroid:13.0.0_ndk_ChromeOS` |
+| 上游 | [ERSTT/redroid](https://github.com/ERSTT/redroid)（Docker Hub 上叫 [`erstt/redroid`](https://hub.docker.com/r/erstt/redroid)） |
+| 是什么 | redroid（Android 13）+ NDK Translation 0.2.3 转译层，基于 ChromeOS skyrim R134 |
+| 大小 | 2.07GB |
+
+**为什么不用官方 redroid**：明日方舟的新引擎把 x86 的 so 去掉了，纯 x86 的安卓镜像跑不起来。
+ERSTT 这套是给 redroid 补了 Houdini / NDK 转译的，x86_64 机器上也能跑 ARM 应用；
+上游对这个 tag 的标注是「Verified stable on Intel / AMD platforms」。
+
+我这边是一个 compose 起单容器：
+
+```yaml
+services:
+  redroid:
+    image: erstt/redroid:13.0.0_ndk_ChromeOS
+    container_name: redroid-cos13
+    tty: true
+    stdin_open: true
+    privileged: true
+    devices:
+      - /dev/dri
+      - /dev/binder
+    networks:
+      - main
+    ports:
+      - 5555:5555
+    volumes:
+      - /path/to/redroid-cos13/data:/data
+    command:
+      - androidboot.redroid_gpu_mode=host
+      - androidboot.use_memfd=1
+networks:
+  main:
+    driver: bridge
+    name: main
+```
+
+几个点：
+
+- `privileged: true` 是必须的，redroid 要用
+- `/dev/binder` 是安卓的必需项，`/dev/dri` 是给 GPU 加速用的。我这台飞牛上
+  `/dev/binder` 已经指向 `/dev/binderfs/binder`，`/dev/dri` 里有 `renderD128`，都是现成的
+- `androidboot.redroid_gpu_mode=host` 走 GPU 加速；机器上没有可用 GPU 就改成 `guest`（软件渲染）
+- `5555` 就是 MAA 里要填的 ADB 端口，所以填 `<NAS_IP>:5555`
+- 容器名带不带前缀都没关系，MAA 只是拿这个名字去查状态（状态代理按名字里有没有 `redroid` 认）
+
+> 上游还提了一条针对方舟的建议：只保留 `arm64-v8a`、去掉 `armeabi-v7a` 和 `armeabi` 会更稳
+> （否则方舟有可能落到 32 位 ARM 转译上）。做法是在 `command:` 里补三行：
+> `ro.product.cpu.abilist=x86_64,x86,arm64-v8a`、
+> `ro.product.cpu.abilist32=x86`、
+> `ro.product.cpu.abilist64=x86_64,arm64-v8a`。
+> 我这份没加，因为我这边跑着没出问题；你要是遇到方舟花屏或者起不来，可以试试。
+
 ## 目录
 
 ```
@@ -207,6 +267,8 @@ MAA-FnOS/
 - [MaaAssistantArknights](https://github.com/MaaAssistantArknights/MaaAssistantArknights) —— MAA 官方核心
 - [MAA-WEB-CONTROL](https://github.com/KlN-4096/MAA-WEB-CONTROL) —— 网页控制台，界面和接口都来自这里
 - [redroid](https://github.com/remote-android/redroid-doc) —— 容器里的安卓
+- [ERSTT/redroid](https://github.com/ERSTT/redroid) —— 我用的那个 redroid 镜像
+  （`erstt/redroid:13.0.0_ndk_ChromeOS`，带了 ARM / NDK 转译，官方镜像跑不了方舟）
 
 ## 许可证
 
