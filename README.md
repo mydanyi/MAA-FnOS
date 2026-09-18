@@ -117,7 +117,7 @@ services:
 
 ## 许可证
 
-[AGPL-3.0](LICENSE)，跟上游 [MAA-WEB-CONTROL](https://github.com/KlN-4096/MAA-WEB-CONTROL) 保持一致。
+[AGPL-3.0](LICENSE)，跟上游保持一致。
 MaaCore 和游戏资源文件的版权归 MAA 项目所有，遵守它们各自的协议。
 
 ## 免责声明
