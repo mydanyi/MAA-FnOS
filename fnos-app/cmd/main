@@ -18,6 +18,10 @@ HEALTH_GRACE="30"     # 容器起来后的宽限秒数；期内不探活（服�
 HEALTH_WARN_THROTTLE="60"  # 探活失败的 WARN 日志节流窗口（秒）
 HEALTH_WARN_STAMP="${TRIM_PKGVAR}/health-warn.ts"
 
+# 优雅停机：停容器前先请应用停掉进行中的任务链，避免硬切断
+GRACEFUL_STOP_TIMEOUT="60"   # 等待任务链释放的最长秒数
+DOCKER_STOP_TIMEOUT="20"     # docker stop 的宽限期（秒）
+
 # redroid 状态查询代理（宿主机侧）
 REDROID_PROXY_HOST="172.17.0.1"
 REDROID_PROXY_PORT="18001"
@@ -322,9 +326,85 @@ start_process() {
     return 1
 }
 
+# 读应用上报的运行状态（GET /api/status 的 state 字段）
+api_state() {
+    curl -s --max-time 3 "http://127.0.0.1:${HOST_PORT}/api/status" 2>/dev/null \
+        | tr -d '\n' \
+        | grep -oE '"state"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 \
+        | sed 's/.*:[[:space:]]*"//; s/"$//'
+}
+
+# 应用状态机共 8 个取值（上游 maa-web/app/models.py 的 RunnerStateName）：
+#   Idle / Connecting / AppendingTasks / Running / Stopping / Stopped / Completed / Failed
+# 「终态」= 没有进行中的任务链，不需要优雅停。
+# 特别注意 Idle：它是应用刚起来的默认态，必须算终态，
+# 否则每次停用一个闲置实例都要白等一轮。
+# 其余（Connecting / AppendingTasks / Running / Stopping，以及将来新增的未知状态）
+# 一律按"还在干活"处理：宁可多等一轮，也不硬切任务链。
+is_terminal_state() {
+    case "$1" in
+        ""|Idle|Stopped|Completed|Failed) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# 请应用优雅停掉进行中的任务链
+# 为什么不能只靠 docker stop：它给容器发 SIGTERM 后会直接杀掉 MaaCore，
+# 任务进度不落盘，重启后前端持有的旧 run_id 失效、任务状态整体错位。
+# 本函数只在"手动停用 / 升级"这条路径上被调用（见 stop_process）；
+# 容器自己退出后被 docker 拉起的情况不经过这里。
+stop_running_tasks() {
+    local state elapsed=0
+
+    state="$(api_state)"
+    if [ -z "${state}" ]; then
+        log_msg "API not reachable, skip graceful stop."
+        return 0
+    fi
+    if is_terminal_state "${state}"; then
+        log_msg "No active task chain (state=${state}), skip graceful stop."
+        return 0
+    fi
+
+    # Stopping 说明应用自己已经在收尾了，重复下发没有意义，等它落到终态即可
+    if [ "${state}" = "Stopping" ]; then
+        log_msg "Runner is already stopping, waiting for it to settle ..."
+    else
+        log_msg "Runner is active (state=${state}), requesting graceful stop ..."
+        curl -sS --max-time 5 -X POST "http://127.0.0.1:${HOST_PORT}/api/stop" >> "${LOG_FILE}" 2>&1 || true
+    fi
+
+    while [ "${elapsed}" -lt "${GRACEFUL_STOP_TIMEOUT}" ]; do
+        sleep 2
+        elapsed=$((elapsed + 2))
+        state="$(api_state)"
+        if [ -z "${state}" ]; then
+            # 探测不到就没法继续判断，交给 docker stop 兜底，不做无意义的空等
+            log_msg "API became unreachable while waiting (${elapsed}s), stopping container anyway."
+            return 0
+        fi
+        if is_terminal_state "${state}"; then
+            log_msg "Task chain released after ${elapsed}s (state=${state})."
+            return 0
+        fi
+    done
+
+    log_msg "WARN: graceful stop timed out after ${GRACEFUL_STOP_TIMEOUT}s (state=${state}), stopping container anyway."
+    return 0
+}
+
 stop_process() {
+    # 先让应用收尾，再停容器
+    if status_container; then
+        stop_running_tasks
+    fi
+
     log_msg "Stopping container ${CONTAINER} ..."
-    docker stop "${CONTAINER}" >> "${LOG_FILE}" 2>&1 || true
+    # 优雅停成功后应用已经空闲，这里基本秒回，20s 绰绰有余；
+    # 万一上面等超时了，说明应用已经卡死，20s 后照样 SIGKILL ——
+    # 与不做优雅停时的最终行为一致，只是多花了一段等待。
+    docker stop --time "${DOCKER_STOP_TIMEOUT}" "${CONTAINER}" >> "${LOG_FILE}" 2>&1 || true
     docker rm -f "${CONTAINER}" >> "${LOG_FILE}" 2>&1 || true
     rm -f "${PID_FILE}"
     log_msg "Container stopped."
