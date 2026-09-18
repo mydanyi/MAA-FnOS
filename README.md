@@ -83,6 +83,8 @@ services:
 几个要注意的点：
 
 - `privileged: true` 和 `/dev/binder` 是 redroid 必需的；`/dev/dri` 是给 GPU 加速的
+- **网络就用 Docker 默认的 `bridge`**（像上面这样不写 `networks:` 就行），别挂自定义网络——
+  不然飞牛网页端远程传文件、手动安装应用会失败（实测踩过）
 - `5555` 就是 MAA 里要填的 ADB 端口，所以填 `<NAS_IP>:5555`
 - 容器名里带 `redroid` 就能自动认出来；名字里不带、或者机器上有好几个，
   就在**宿主**上给状态代理设 `MAA_REDROID_CONTAINER=<容器名>`，指定要查哪一个
