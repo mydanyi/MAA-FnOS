@@ -10,6 +10,12 @@ LEGACY_CONTAINER="maa-web-test"
 HOST_PORT="18000"
 CONTAINER_PORT="8000"
 
+# 健康探活：容器在 ≠ 服务在。
+# 容器跑着但服务卡死/端口不通时，应用中心应当看到"异常"，而不是一直显示"运行中"。
+HEALTH_CHECK_URL="http://127.0.0.1:${HOST_PORT}/api/status"
+HEALTH_TIMEOUT="2"   # 探活超时（秒）
+HEALTH_GRACE="30"    # 容器起来后的宽限秒数；期内不探活（服务还没 listen，探了必然误报）
+
 # redroid 状态查询代理（宿主机侧）
 REDROID_PROXY_HOST="172.17.0.1"
 REDROID_PROXY_PORT="18001"
@@ -201,12 +207,35 @@ status_container() {
     docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' 2>/dev/null | grep -q "${CONTAINER}"
 }
 
+# 容器已经启动多久（秒）。拿不到就返回非 0，调用方按"不探活"处理，避免误报。
+container_uptime() {
+    local started secs
+    started="$(docker inspect --format '{{.State.StartedAt}}' "${CONTAINER}" 2>/dev/null)" || return 1
+    [ -n "${started}" ] || return 1
+    # 去掉纳秒部分，GNU date 能直接解析 2026-09-18T05:37:57Z
+    started="$(printf '%s' "${started}" | sed 's/\.[0-9]*//')"
+    secs="$(date -d "${started}" +%s 2>/dev/null)" || return 1
+    [ -n "${secs}" ] || return 1
+    printf '%s\n' "$(( $(date +%s) - secs ))"
+}
+
+# 应用是否健康：容器在运行，且服务真的响应
+# 注意 PID_FILE 是死代码（全仓库只 rm、从不写），原先那个判断恒为假，
+# 等价于只看 status_container —— 容器在但服务死了照样报"运行中"。
 status() {
-    if [ -f "${PID_FILE}" ] || status_container; then
-        if status_container; then
-            return 0
-        fi
+    status_container || return 1
+
+    local up
+    if up="$(container_uptime)" && [ "${up}" -lt "${HEALTH_GRACE}" ]; then
+        # 启动宽限期内不探活，直接认为健康
+        return 0
     fi
+
+    if curl -sf -o /dev/null --max-time "${HEALTH_TIMEOUT}" "${HEALTH_CHECK_URL}" 2>/dev/null; then
+        return 0
+    fi
+
+    log_msg "WARN: container ${CONTAINER} is running but ${HEALTH_CHECK_URL} is not responding (uptime=${up:-unknown}s)."
     return 1
 }
 
@@ -230,8 +259,11 @@ start_process() {
     # --init：给容器注入 tini 当 init，负责回收被应用遗弃的孤儿/僵尸进程。
     # 应用侧不会 wait() 自己起的 adb/sh 子进程，实测容器里会一直挂着
     # [adb] <defunct> / [sh] <defunct>，父进程都是 PID 1，且不会自己消失。
+    # unless-stopped：容器非正常退出（崩溃 / OOM / 宿主重启）时由 docker 自己拉起来。
+    # 显式 `docker stop`（即本脚本的 stop）属于"人为停止"，不会被重启，
+    # 所以应用中心的停用语义不受影响。
     docker run -d --name "${CONTAINER}" \
-        --restart no \
+        --restart unless-stopped \
         --init \
         -p "${HOST_PORT}:${CONTAINER_PORT}" \
         -e MAA_ADAPTER=official \
