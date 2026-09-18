@@ -213,7 +213,10 @@ status_container() {
     docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' 2>/dev/null | grep -q "${CONTAINER}"
 }
 
-# 容器已经启动多久（秒）。拿不到就返回非 0，调用方按"不探活"处理，避免误报。
+# 容器已经启动多久（秒）。拿不到就返回非 0。
+# 调用方（status）据此跳过宽限期判断、直接去探活 ——
+# **不**拿它当免检理由，否则 docker inspect 持续失败时，
+# 服务卡死会被一直显示成"运行中"。
 container_uptime() {
     local started secs
     started="$(docker inspect --format '{{.State.StartedAt}}' "${CONTAINER}" 2>/dev/null)" || return 1
