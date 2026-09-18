@@ -212,7 +212,11 @@ networks:
   `/dev/binder` 已经指向 `/dev/binderfs/binder`，`/dev/dri` 里有 `renderD128`，都是现成的
 - `androidboot.redroid_gpu_mode=host` 走 GPU 加速；机器上没有可用 GPU 就改成 `guest`（软件渲染）
 - `5555` 就是 MAA 里要填的 ADB 端口，所以填 `<NAS_IP>:5555`
-- 容器名带不带前缀都没关系，MAA 只是拿这个名字去查状态（状态代理按名字里有没有 `redroid` 认）
+- 容器名带不带前缀都行，但**名字里得有 `redroid`**：状态代理按这个认白名单。另外前端的
+  「检查 redroid 容器」固定用默认名 `redroid` 去查，所以名字对不上的话那个按钮会一直报「容器不存在」
+- 名字里确实不带 `redroid`，或者本机有多个 redroid 容器、想固定查某一个，就在**宿主**上给
+  状态代理设 `MAA_REDROID_CONTAINER=<容器名>` 显式指定；不设的话，默认名查不到时
+  代理会自动挑第一个名字含 `redroid` 的容器
 
 > 上游还提了一条针对方舟的建议：只保留 `arm64-v8a`、去掉 `armeabi-v7a` 和 `armeabi` 会更稳
 > （否则方舟有可能落到 32 位 ARM 转译上）。做法是在 `command:` 里补三行：
