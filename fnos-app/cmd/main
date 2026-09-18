@@ -227,8 +227,12 @@ start_process() {
     mkdir -p "${DATA_DIR}" 2>/dev/null || true
 
     log_msg "Starting container ${CONTAINER} ..."
+    # --init：给容器注入 tini 当 init，负责回收被应用遗弃的孤儿/僵尸进程。
+    # 应用侧不会 wait() 自己起的 adb/sh 子进程，实测容器里会一直挂着
+    # [adb] <defunct> / [sh] <defunct>，父进程都是 PID 1，且不会自己消失。
     docker run -d --name "${CONTAINER}" \
         --restart no \
+        --init \
         -p "${HOST_PORT}:${CONTAINER_PORT}" \
         -e MAA_ADAPTER=official \
         -e MAA_CORE_DIR=/opt/maa \
