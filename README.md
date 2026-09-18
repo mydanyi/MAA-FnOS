@@ -61,7 +61,7 @@ MAA 本身是桌面程序，没法直接塞进 NAS。我的做法是把这几样
 
 ## 安装
 
-把 `maa-web.fpk` 传到 NAS，然后：
+到 [Releases](https://github.com/mydanyi/MAA-FnOS/releases) 下载 `maa-web.fpk`（包里自带离线镜像，不用自己构建），传到 NAS，然后：
 
 ```bash
 sudo appcenter-cli install-fpk --volume 1 /home/<user>/maa-web.fpk
@@ -121,7 +121,6 @@ cd fnos-app && fnpack build
 sudo appcenter-cli install-fpk --volume 1 maa-web.fpk
 ```
 
-镜像和 fpk 加起来快 1.2GB，超过 GitHub 的单文件限制，所以没往仓库里放，请自己构建。
 官方 MAA 包要求 glibc ≥ 2.38，基础镜像得用 Ubuntu 24.04 或更新的。
 
 ## 目录
