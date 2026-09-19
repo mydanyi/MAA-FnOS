@@ -155,7 +155,12 @@ ensure_image() {
     if [ -f "${IMAGE_TGZ}" ]; then
         local tmp_tar="${TRIM_PKGVAR}/maa-image.tar"
         log_msg "Decompressing ${IMAGE_TGZ} ..."
-        if ! gunzip -c "${IMAGE_TGZ}" > "${tmp_tar}" 2>> "${LOG_FILE}"; then
+        # gunzip 对「压缩流本身完好、只是尾部多带了几个字节」的包会返回 2
+        # （报 trailing garbage），而解出来的 tar 是完整可用的。
+        # 只看返回码会把这样的好包判成坏包 —— 判定改成校验解压产物本身。
+        gunzip -c "${IMAGE_TGZ}" > "${tmp_tar}" 2>> "${LOG_FILE}" || true
+        if [ ! -s "${tmp_tar}" ] || ! tar -tf "${tmp_tar}" manifest.json >/dev/null 2>&1; then
+            rm -f "${tmp_tar}"
             write_user_error "镜像解压失败，请查看日志 ${LOG_FILE}"
             return 1
         fi
@@ -278,6 +283,20 @@ status_container() {
     docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' 2>/dev/null | grep -q "${CONTAINER}"
 }
 
+# 容器现在用的镜像，是不是包里的那一份。
+# 「容器在跑就直接复用」是个坑：升级装进来的新镜像已经就位，容器却还挂在旧镜像上，
+# 跑的还是旧代码，而界面上一切正常 —— 升级等于白做。所以这里必须比对镜像 ID。
+container_image_matches() {
+    local want have
+    docker image inspect "${IMAGE}" >/dev/null 2>&1 || return 1
+    ensure_expected_id || return 1
+    want="$(tr -d '[:space:]' < "${IMAGE_ID_FILE}" 2>/dev/null)"
+    [ -n "${want}" ] || return 1
+    have="$(docker inspect --format '{{.Image}}' "${CONTAINER}" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "${have}" ] || return 1
+    [ "${have}" = "${want}" ] || [ "${have#sha256:}" = "${want#sha256:}" ]
+}
+
 # 容器已经启动多久（秒）。拿不到就返回非 0。
 # 调用方（status）据此跳过宽限期判断、直接去探活 ——
 # **不**拿它当免检理由，否则 docker inspect 持续失败时，
@@ -354,8 +373,15 @@ start_process() {
     ensure_redroid_proxy || true
 
     if status_container; then
-        log_msg "Container already running."
-        return 0
+        if container_image_matches; then
+            log_msg "Container already running."
+            return 0
+        fi
+        # 容器在跑，但挂的是旧镜像：先把任务链收尾，再拆掉容器重建。
+        log_msg "Container runs a stale image -> recreating with ${IMAGE}."
+        stop_running_tasks
+        docker stop --time "${DOCKER_STOP_TIMEOUT}" "${CONTAINER}" >> "${LOG_FILE}" 2>&1 || true
+        docker rm -f "${CONTAINER}" >> "${LOG_FILE}" 2>&1 || true
     fi
 
     # 清掉同名的停止态容器

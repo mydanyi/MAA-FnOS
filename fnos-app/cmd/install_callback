@@ -62,7 +62,11 @@ if [ -n "${CUR_ID}" ]; then
 fi
 
 log_msg "Decompressing ${TAR_GZ} -> ${TMP_TAR} ..."
-if ! gunzip -c "${TAR_GZ}" > "${TMP_TAR}" 2>> "${LOG_FILE}"; then
+# gunzip 对「压缩流完好、尾部多几个字节」的包返回 2（trailing garbage），
+# 但解出的 tar 是完整的。只看返回码会误杀好包 —— 改为校验产物。
+gunzip -c "${TAR_GZ}" > "${TMP_TAR}" 2>> "${LOG_FILE}" || true
+if [ ! -s "${TMP_TAR}" ] || ! tar -tf "${TMP_TAR}" manifest.json >/dev/null 2>&1; then
+    rm -f "${TMP_TAR}"
     write_user_error "镜像解压失败，请查看日志 ${LOG_FILE}"
     exit 0
 fi
