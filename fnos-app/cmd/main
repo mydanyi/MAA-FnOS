@@ -33,6 +33,16 @@ REDROID_PROXY_VERSION="1.1"
 # redroid 容器对外映射的 ADB 端口，注入给代理用于按端口反查真实容器名。
 REDROID_PORT="5555"
 
+# 自动升级小助手（宿主机侧常驻）
+# 飞牛的「手动安装 fpk」对已安装的应用只解包、不安装，所以由它盯着
+# /vol1/appcenter-downloads 里新解出来的包，发现版本更高就 install-local 装上。
+WATCHER_PY="${TRIM_APPDEST}/fpk_upgrade_watcher.py"
+WATCHER_LOG="${TRIM_PKGVAR}/upgrade-watcher.log"
+WATCHER_VER_FILE="${TRIM_PKGVAR}/upgrade-watcher.version"
+# 必须与 fpk_upgrade_watcher.py 里的 WATCHER_VERSION 一致；
+# 对不上说明内存里跑的是旧脚本，要换掉（否则新逻辑不生效）。
+WATCHER_VERSION="1.0"
+
 LOG_FILE="${TRIM_PKGVAR}/info.log"
 PID_FILE="${TRIM_PKGVAR}/app.pid"
 
@@ -278,6 +288,60 @@ ensure_redroid_proxy() {
     return 0
 }
 
+# 停掉本项目启动的升级小助手（只按完整路径精确匹配，不碰别的 python 进程）
+stop_upgrade_watcher() {
+    local pids
+    pids="$(pgrep -f "^python3 ${WATCHER_PY}$" 2>/dev/null || true)"
+    [ -n "${pids}" ] || return 0
+    # shellcheck disable=SC2086
+    kill ${pids} 2>/dev/null || true
+    sleep 1
+    pids="$(pgrep -f "^python3 ${WATCHER_PY}$" 2>/dev/null || true)"
+    if [ -n "${pids}" ]; then
+        # shellcheck disable=SC2086
+        kill -9 ${pids} 2>/dev/null || true
+    fi
+    return 0
+}
+
+# 确保自动升级小助手在跑。
+# 判断"要不要重起"看两样：版本文件里的号对不对（脚本内容变了就要换），
+# 以及进程本身在不在（进程崩了要补一个）。
+ensure_upgrade_watcher() {
+    [ -f "${WATCHER_PY}" ] || {
+        log_msg "upgrade watcher script not found: ${WATCHER_PY} (skip)"
+        return 0
+    }
+
+    local running alive
+    running="$(tr -d '[:space:]' < "${WATCHER_VER_FILE}" 2>/dev/null || true)"
+    if pgrep -f "^python3 ${WATCHER_PY}$" >/dev/null 2>&1; then
+        alive="yes"
+    else
+        alive="no"
+    fi
+
+    if [ "${alive}" = "yes" ] && [ "${running}" = "${WATCHER_VERSION}" ]; then
+        return 0
+    fi
+
+    if [ "${alive}" = "yes" ]; then
+        log_msg "upgrade watcher version changed (running=${running:-none}, expected=${WATCHER_VERSION}), restarting ..."
+        stop_upgrade_watcher
+    fi
+
+    log_msg "Starting upgrade watcher (version ${WATCHER_VERSION}) ..."
+    setsid nohup python3 "${WATCHER_PY}" > "${WATCHER_LOG}" 2>&1 < /dev/null &
+    sleep 1
+
+    if pgrep -f "^python3 ${WATCHER_PY}$" >/dev/null 2>&1; then
+        log_msg "upgrade watcher started."
+    else
+        log_msg "WARN: upgrade watcher failed to start（不影响主功能，只是要手动升级）"
+    fi
+    return 0
+}
+
 # 容器是否在运行
 status_container() {
     docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' 2>/dev/null | grep -q "${CONTAINER}"
@@ -371,6 +435,7 @@ start_process() {
     cleanup_legacy_container
     ensure_image || return 1
     ensure_redroid_proxy || true
+    ensure_upgrade_watcher || true
 
     if status_container; then
         if container_image_matches; then
