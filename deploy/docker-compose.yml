@@ -1,12 +1,12 @@
 services:
-  maa-web:
+  maa-fnos:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         MAA_TARBALL: maa-linux.tar.gz
-    image: maa-web-control:local
-    container_name: maa-web
+    image: maa-fnos:local
+    container_name: maa-fnos
     restart: "no"
     ports:
       - "18000:8000"

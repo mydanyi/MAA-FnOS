@@ -43,7 +43,8 @@ LISTEN_PORT = 18001
 # 只允许查询这些容器（按名称正则白名单），避免被拿来探测宿主机上其他容器
 ALLOW_PATTERNS = [
     re.compile(r"redroid", re.I),
-    re.compile(r"^maa-web(-test)?$"),   # 本项目容器；-test 为 v1.0.3 之前的旧名，留作过渡
+    re.compile(r"^maa-fnos$"),            # 本项目容器（v1.0.7 起）
+    re.compile(r"^maa-web(-test)?$"),     # 历史容器名（v1.0.6 及更早），留作过渡兼容
 ]
 
 # 单次 docker 调用超时

@@ -5,6 +5,21 @@
 
 ---
 
+## [未发布]
+
+### 变更
+- **应用标识整体改名 `maa-web` → `maa-fnos`**（v1.0.7 起）：appname、容器名、
+  镜像名（原 `maa-web-control:local` → `maa-fnos:local`）、数据目录
+  （`/vol1/@appdata/maa-fnos/`）、fpk 文件名（`maa-fnos-v<版本>.fpk`）统一更换。
+  原因：`maa-web` 系列名称取自上游前端项目，但容器里已是完整应用（引擎+前端+adb），名不副实。
+- 旧容器名 `maa-web` 与 `maa-web-test` 均列入历史清理名单，启动时自动删除；
+  redroid 状态代理白名单兼容新旧全部容器名。
+- ⚠️ 因 appname 变更，已装旧版（≤1.0.6）的用户**不会收到升级提示**，需手动安装新包；
+  旧配置在 `/vol1/@appdata/maa-web/maa-data/`，需手动迁入新目录
+  （`/vol1/@appdata/maa-fnos/maa-data/`）。
+
+---
+
 ## [1.0.6] — 2026-09-19
 
 ### 修复
