@@ -19,6 +19,6 @@ ls -la "$CTX"
 
 echo "=== [3/4] docker build ==="
 cd "$CTX"
-docker build -t maa-web-control:local --build-arg MAA_TARBALL=maa-linux.tar.gz .
+docker build -t maa-fnos:local --build-arg MAA_TARBALL=maa-linux.tar.gz .
 echo "=== [4/4] BUILD OK ==="
-docker images maa-web-control:local --format "{{.Repository}}:{{.Tag}} {{.Size}}"
+docker images maa-fnos:local --format "{{.Repository}}:{{.Tag}} {{.Size}}"

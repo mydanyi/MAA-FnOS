@@ -2,10 +2,10 @@
   "data-share": {
     "shares": [
       {
-        "name": "maa-web"
+        "name": "maa-fnos"
       },
       {
-        "name": "maa-web/data"
+        "name": "maa-fnos/data"
       }
     ]
   }

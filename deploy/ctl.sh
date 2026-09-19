@@ -3,7 +3,7 @@
 # 用法: bash ctl.sh start|stop|status|logs|rm
 set -euo pipefail
 
-NAME=maa-web
+NAME=maa-fnos
 
 case "${1:-status}" in
   start)
@@ -16,7 +16,7 @@ case "${1:-status}" in
       -e MAA_WEB_PORT=8000 \
       -e TZ=Asia/Shanghai \
       -v maa-data:/app/data \
-      maa-web-control:local
+      maa-fnos:local
     echo "started"
     sleep 5
     docker ps --filter "name=$NAME" --format "{{.Names}} {{.Status}} {{.Ports}}"

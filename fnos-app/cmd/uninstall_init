@@ -2,8 +2,8 @@
 # 卸载应用前：停止并删除 MAA 容器；保留用户数据（data 卷）
 
 LOG_FILE="${TRIM_PKGVAR}/uninstall.log"
-CONTAINER="maa-web"
-LEGACY_CONTAINER="maa-web-test"   # v1.0.3 之前的旧名，一并清掉
+CONTAINER="maa-fnos"
+LEGACY_CONTAINERS="maa-web maa-web-test"   # 历史容器名，一并清掉
 
 log_msg() {
     mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
@@ -11,7 +11,7 @@ log_msg() {
 }
 
 if command -v docker >/dev/null 2>&1; then
-    for c in "${CONTAINER}" "${LEGACY_CONTAINER}"; do
+    for c in "${CONTAINER}" ${LEGACY_CONTAINERS}; do
         log_msg "Removing container ${c} ..."
         docker rm -f "${c}" >> "${LOG_FILE}" 2>&1 || true
     done

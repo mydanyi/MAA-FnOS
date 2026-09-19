@@ -7,7 +7,7 @@
 # 装完之后跑的其实还是旧镜像 —— 而且全程没有任何报错。
 
 LOG_FILE="${TRIM_PKGVAR}/install.log"
-IMAGE="maa-web-control:local"
+IMAGE="maa-fnos:local"
 TAR_GZ="${TRIM_APPDEST}/maa-image.tar.gz"
 TMP_TAR="${TRIM_PKGVAR}/maa-image.tar"
 ID_FILE="${TRIM_APPDEST}/maa-image.id"
