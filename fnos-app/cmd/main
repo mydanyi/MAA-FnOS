@@ -27,6 +27,11 @@ REDROID_PROXY_HOST="172.17.0.1"
 REDROID_PROXY_PORT="18001"
 REDROID_PROXY_PY="${TRIM_APPDEST}/redroid_status_proxy.py"
 REDROID_PROXY_LOG="${TRIM_PKGVAR}/redroid-proxy.log"
+# 代理脚本的版本号，必须与 redroid_status_proxy.py 里的 PROXY_VERSION 一致。
+# 对不上说明 18001 上跑的还是上一版进程，要换掉（否则升级静默失效）。
+REDROID_PROXY_VERSION="1.1"
+# redroid 容器对外映射的 ADB 端口，注入给代理用于按端口反查真实容器名。
+REDROID_PORT="5555"
 
 LOG_FILE="${TRIM_PKGVAR}/info.log"
 PID_FILE="${TRIM_PKGVAR}/app.pid"
@@ -181,14 +186,67 @@ ensure_image() {
     return 1
 }
 
+# 代理上报的版本号；问不到（老版本没这个端点、或端口上不是我们的代理）返回空串
+proxy_reported_version() {
+    curl -sf --max-time 2 "http://${REDROID_PROXY_HOST}:${REDROID_PROXY_PORT}/version" 2>/dev/null \
+        | tr -d '\n' \
+        | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 \
+        | sed 's/.*:[[:space:]]*"//; s/"$//'
+}
+
+# 端口上有没有东西在应答（任何 HTTP 状态码都算，含 403/404）
+proxy_port_answered() {
+    curl -s --max-time 2 "http://${REDROID_PROXY_HOST}:${REDROID_PROXY_PORT}/inspect?name=__probe__" >/dev/null 2>&1
+}
+
+# 停掉本项目启动的代理进程。
+# 只按本脚本的完整路径精确匹配，宿主机上别的 python 进程一律不碰。
+stop_redroid_proxy() {
+    local pids
+    pids="$(pgrep -f "^python3 ${REDROID_PROXY_PY}$" 2>/dev/null || true)"
+    [ -n "${pids}" ] || return 0
+
+    # shellcheck disable=SC2086
+    kill ${pids} 2>/dev/null || true
+    sleep 1
+
+    pids="$(pgrep -f "^python3 ${REDROID_PROXY_PY}$" 2>/dev/null || true)"
+    if [ -n "${pids}" ]; then
+        # shellcheck disable=SC2086
+        kill -9 ${pids} 2>/dev/null || true
+    fi
+    return 0
+}
+
 # 确保 redroid 状态代理在宿主机侧运行
 # 说明：MAA 的「检查 redroid 容器」功能需要查询宿主机上的容器状态。
 # 这里启动一个只读代理（仅支持 inspect 查询），容器内通过它获取状态，
 # 从而避免把 docker.sock 直接挂进容器（最小权限原则）。
+#
+# 探活为什么不能只看「端口有没有人应答」：
+# 换了脚本但没换进程时，旧代理照样在应答，升级就静默失效了 ——
+# 「检查 redroid 容器」一直按旧行为报错，而日志里什么都看不出来。
+# 实测：探针名不在白名单，代理回 403；`curl -s` 不带 -f 时 403 也算成功，
+# 于是每次都判定"已在运行"，旧进程永远换不掉。
+# 所以这里比对代理自报的版本号，对不上就先把旧进程停掉再起新的。
 ensure_redroid_proxy() {
-    # 已监听则直接返回
-    if curl -s --max-time 2 "http://${REDROID_PROXY_HOST}:${REDROID_PROXY_PORT}/inspect?name=__probe__" >/dev/null 2>&1; then
+    local running
+    running="$(proxy_reported_version)"
+
+    if [ "${running}" = "${REDROID_PROXY_VERSION}" ]; then
         return 0
+    fi
+
+    if [ -n "${running}" ]; then
+        log_msg "redroid proxy version changed (running=${running}, expected=${REDROID_PROXY_VERSION}), restarting ..."
+        stop_redroid_proxy
+    elif proxy_port_answered; then
+        # 端口有人应答却问不到版本：要么是本项目旧版代理（还没有 /version 端点），
+        # 要么是别的进程占着这个端口。前者要换掉；后者换不掉，
+        # 会在下面启动失败、记一条 WARN，不影响主功能。
+        log_msg "redroid proxy on ${REDROID_PROXY_HOST}:${REDROID_PROXY_PORT} reports no version (legacy build?), restarting ..."
+        stop_redroid_proxy
     fi
 
     if [ ! -f "${REDROID_PROXY_PY}" ]; then
@@ -197,11 +255,16 @@ ensure_redroid_proxy() {
     fi
 
     log_msg "Starting redroid status proxy on ${REDROID_PROXY_HOST}:${REDROID_PROXY_PORT} ..."
-    setsid nohup python3 "${REDROID_PROXY_PY}" > "${REDROID_PROXY_LOG}" 2>&1 < /dev/null &
+    # MAA_REDROID_PORT 注入给代理：默认名查不到时按这个端口反查真实容器名
+    MAA_REDROID_PORT="${REDROID_PORT}" \
+        setsid nohup python3 "${REDROID_PROXY_PY}" > "${REDROID_PROXY_LOG}" 2>&1 < /dev/null &
     sleep 1
 
-    if curl -s --max-time 2 "http://${REDROID_PROXY_HOST}:${REDROID_PROXY_PORT}/inspect?name=__probe__" >/dev/null 2>&1; then
-        log_msg "redroid proxy started."
+    running="$(proxy_reported_version)"
+    if [ "${running}" = "${REDROID_PROXY_VERSION}" ]; then
+        log_msg "redroid proxy started (version ${running})."
+    elif proxy_port_answered; then
+        log_msg "WARN: redroid proxy version mismatch after start (reported=${running:-none}, expected=${REDROID_PROXY_VERSION})."
     else
         log_msg "WARN: redroid proxy failed to start (功能可能不可用，不影响主功能)"
     fi
