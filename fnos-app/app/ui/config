@@ -3,10 +3,10 @@
         "maa-fnos.Application": {
             "title": "MAA",
             "icon": "images/icon_{0}.png",
-            "type": "url",
-            "protocol": "http",
-            "port": "18000",
-            "url": "/",
+            "type": "iframe",
+            "gatewayPrefix": "/app/maa-fnos",
+            "gatewaySocket": "app.sock",
+            "url": "/app/maa-fnos/",
             "allUsers": false
         }
     }

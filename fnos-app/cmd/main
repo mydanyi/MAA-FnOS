@@ -7,12 +7,14 @@ IMAGE="maa-fnos:local"
 CONTAINER="maa-fnos"
 # 历史容器名：maa-web-test（v1.0.3 之前）、maa-web（v1.0.3–1.0.6），首次 start 时清理，避免占用宿主机端口
 LEGACY_CONTAINERS="maa-web maa-web-test"
-HOST_PORT="18000"
-CONTAINER_PORT="8000"
+# 走飞牛统一网关：应用服务监听 unix socket，不再对外映射端口。
+# 网关按 app/ui/config 里的 gatewaySocket 找过来，鉴权由网关负责。
+GATEWAY_SOCKET="${TRIM_APPDEST}/app.sock"
+CONTAINER_PORT="8000"      # 仅调试用（走 TCP 时）
 
 # 健康探活：容器在 ≠ 服务在。
 # 容器跑着但服务卡死/端口不通时，应用中心应当看到"异常"，而不是一直显示"运行中"。
-HEALTH_CHECK_URL="http://127.0.0.1:${HOST_PORT}/api/status"
+HEALTH_CHECK_PATH="/api/status"   # 探活走 GATEWAY_SOCKET，不再走端口
 HEALTH_TIMEOUT="2"    # 探活超时（秒）
 HEALTH_GRACE="30"     # 容器起来后的宽限秒数；期内不探活（服务还没 listen，探了必然误报）
 HEALTH_WARN_THROTTLE="60"  # 探活失败的 WARN 日志节流窗口（秒）
@@ -356,12 +358,13 @@ status() {
         detail="uptime=unknown, docker inspect failed"
     fi
 
-    if curl -sf -o /dev/null --max-time "${HEALTH_TIMEOUT}" "${HEALTH_CHECK_URL}" 2>/dev/null; then
+    if curl -sf -o /dev/null --max-time "${HEALTH_TIMEOUT}" \
+        --unix-socket "${GATEWAY_SOCKET}" "http://localhost${HEALTH_CHECK_PATH}" 2>/dev/null; then
         return 0
     fi
 
     if should_log_health_warn; then
-        log_msg "WARN: container ${CONTAINER} is running but ${HEALTH_CHECK_URL} is not responding (${detail})."
+        log_msg "WARN: container ${CONTAINER} is running but ${GATEWAY_SOCKET} is not responding (${detail})."
     fi
     return 1
 }
@@ -399,20 +402,19 @@ start_process() {
     docker run -d --name "${CONTAINER}" \
         --restart unless-stopped \
         --init \
-        -p "${HOST_PORT}:${CONTAINER_PORT}" \
         -e MAA_ADAPTER=official \
         -e MAA_CORE_DIR=/opt/maa \
-        -e MAA_WEB_HOST=0.0.0.0 \
-        -e MAA_WEB_PORT="${CONTAINER_PORT}" \
+        -e MAA_WEB_SOCKET=/gw/app.sock \
         -e TZ=Asia/Shanghai \
         -e REDROID_PROXY_HOST="${REDROID_PROXY_HOST}" \
         -e REDROID_PROXY_PORT="${REDROID_PROXY_PORT}" \
         -v "${DATA_DIR}:/app/data" \
+        -v "${TRIM_APPDEST}:/gw" \
         "${IMAGE}" >> "${LOG_FILE}" 2>&1
 
     sleep 3
     if status_container; then
-        log_msg "Container started: ${CONTAINER} (0.0.0.0:${HOST_PORT})"
+        log_msg "Container started: ${CONTAINER} (gateway socket: ${GATEWAY_SOCKET})"
         return 0
     fi
 
@@ -422,7 +424,7 @@ start_process() {
 
 # 读应用上报的运行状态（GET /api/status 的 state 字段）
 api_state() {
-    curl -s --max-time 3 "http://127.0.0.1:${HOST_PORT}/api/status" 2>/dev/null \
+    curl -s --max-time 3 --unix-socket "${GATEWAY_SOCKET}" "http://localhost/api/status" 2>/dev/null \
         | tr -d '\n' \
         | grep -oE '"state"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 \
@@ -466,7 +468,7 @@ stop_running_tasks() {
         log_msg "Runner is already stopping, waiting for it to settle ..."
     else
         log_msg "Runner is active (state=${state}), requesting graceful stop ..."
-        curl -sS --max-time 5 -X POST "http://127.0.0.1:${HOST_PORT}/api/stop" >> "${LOG_FILE}" 2>&1 || true
+        curl -sS --max-time 5 --unix-socket "${GATEWAY_SOCKET}" -X POST "http://localhost/api/stop" >> "${LOG_FILE}" 2>&1 || true
     fi
 
     while [ "${elapsed}" -lt "${GRACEFUL_STOP_TIMEOUT}" ]; do
