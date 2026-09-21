@@ -302,9 +302,16 @@ status_container() {
     docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' 2>/dev/null | grep -q "${CONTAINER}"
 }
 
-# 向应用发一个 GET。优先走网关 socket，拿不到就回退旧容器的 TCP 端口。
+# 当前容器是不是「网关改造前」那种 —— 只有它会把宿主 18000 映射进来。
+# 新容器一个端口都不映射，所以这是回退分支唯一的合法前提。
+# 卡这一下是必要的：本机别的服务万一占了 18000、又对任何路径都回 200
+# （catch-all 那种），光看状态码会把已经坏掉的 socket 误判成健康。
+legacy_port_published() {
+    docker port "${CONTAINER}" 2>/dev/null | grep -q ":${LEGACY_TCP_PORT}\$"
+}
+
+# 向应用发一个 GET。优先走网关 socket；拿不到、且当前确实是旧容器，才回退它的 TCP 端口。
 # 输出响应体；返回码表示「有没有拿到成功响应」（用了 -f，只有 2xx 才算）。
-# 回退分支的意义见 LEGACY_TCP_PORT 那段说明 —— 升级窗口里容器还是旧的。
 api_get() {
     local path="$1" out
     if out="$(curl -sf --max-time "${HEALTH_TIMEOUT}" --unix-socket "${GATEWAY_SOCKET}" \
@@ -312,10 +319,12 @@ api_get() {
         printf '%s' "${out}"
         return 0
     fi
-    if out="$(curl -sf --max-time "${HEALTH_TIMEOUT}" \
-            "http://127.0.0.1:${LEGACY_TCP_PORT}${path}" 2>/dev/null)"; then
-        printf '%s' "${out}"
-        return 0
+    if legacy_port_published; then
+        if out="$(curl -sf --max-time "${HEALTH_TIMEOUT}" \
+                "http://127.0.0.1:${LEGACY_TCP_PORT}${path}" 2>/dev/null)"; then
+            printf '%s' "${out}"
+            return 0
+        fi
     fi
     return 1
 }
@@ -323,11 +332,14 @@ api_get() {
 # 请应用停掉进行中的任务链（POST /api/stop）。同样要能回退旧容器，
 # 否则升级路径上这一步会打空，任务链还是会被硬切。
 api_post_stop() {
-    curl -sS --max-time 5 --unix-socket "${GATEWAY_SOCKET}" -X POST "http://localhost/api/stop" \
-        >> "${LOG_FILE}" 2>&1 \
-        || curl -sS --max-time 5 -X POST "http://127.0.0.1:${LEGACY_TCP_PORT}/api/stop" \
-            >> "${LOG_FILE}" 2>&1 \
-        || true
+    if curl -sS --max-time 5 --unix-socket "${GATEWAY_SOCKET}" -X POST "http://localhost/api/stop" \
+            >> "${LOG_FILE}" 2>&1; then
+        return 0
+    fi
+    # 回退同样加门控：别把 /api/stop 打到本机恰好占着 18000 的别的服务上
+    legacy_port_published || return 0
+    curl -sS --max-time 5 -X POST "http://127.0.0.1:${LEGACY_TCP_PORT}/api/stop" \
+        >> "${LOG_FILE}" 2>&1 || true
     return 0
 }
 
@@ -437,9 +449,17 @@ start_process() {
 
     mkdir -p "${DATA_DIR}" 2>/dev/null || true
 
-    # socket 专用目录 + 软链。目录必须以 package 用户建出来（本脚本就是这个身份），
-    # 容器里建出的 socket 属主才对得上；docker 自动创建的挂载点属主是 root，不行。
-    mkdir -p "${GATEWAY_DIR}" 2>/dev/null || true
+    # socket 专用目录 + 软链。
+    # 容器以 root 跑，socket 最终属主由启动器 chown 决定 —— 它取 socket 所在目录的属主，
+    # 所以这个目录必须由 package 用户建出来（本脚本就是这个身份）。docker 自动创建的挂载点
+    # 属主是 root，那会让应用自己的探活被自己挡掉。所以这里不像 DATA_DIR 那样吞错误：
+    # 建不出来就当场失败，免得留下一个悄悄坏掉的部署。
+    if ! mkdir -p "${GATEWAY_DIR}"; then
+        write_user_error "无法创建网关 socket 目录 ${GATEWAY_DIR}"
+        return 1
+    fi
+    # 属主显式传进去，不靠启动器去猜挂载点归谁（取不到就留空，启动器会回退到目录属主，结果一致）
+    GATEWAY_OWNER="$(stat -c '%u:%g' "${GATEWAY_DIR}" 2>/dev/null || true)"
     rm -f "${GATEWAY_SOCKET}"
     ln -s "${GATEWAY_DIR}/app.sock" "${GATEWAY_SOCKET}" 2>/dev/null || true
 
@@ -456,6 +476,7 @@ start_process() {
         -e MAA_ADAPTER=official \
         -e MAA_CORE_DIR=/opt/maa \
         -e MAA_WEB_SOCKET=/gw/app.sock \
+        -e "MAA_WEB_SOCKET_OWNER=${GATEWAY_OWNER}" \
         -e TZ=Asia/Shanghai \
         -e REDROID_PROXY_HOST="${REDROID_PROXY_HOST}" \
         -e REDROID_PROXY_PORT="${REDROID_PROXY_PORT}" \

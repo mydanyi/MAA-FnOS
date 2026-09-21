@@ -11,17 +11,17 @@
 
 ## 怎么装
 
-1. 到 [Releases](https://github.com/mydanyi/MAA-FnOS/releases) 下载最新的 `maa-web-v*.fpk`
+1. 到 [Releases](https://github.com/mydanyi/MAA-FnOS/releases) 下载最新的 `maa-fnos-v*.fpk`
    （包里自带离线镜像，不用自己构建，也不用联网）
 2. 打开飞牛 **应用中心**，点左下角的 **手动安装**
 3. 选好存储空间，点 **从电脑上传**，把刚下载的 fpk 选上
    （fpk 已经在 NAS 上，就点 **从 NAS 添加**）
 4. 装完在应用中心点启动，再点桌面上的 **MAA** 图标
 
-地址是 `http://<NAS_IP>:18000/`。
+它挂在飞牛自己的统一网关后面，不用记端口，也不占端口 —— 桌面那个 **MAA** 图标点开就是控制台。
 
 出新版就用同样的方式再装一次新包。任务档案、日志、截图都存在
-`/vol1/@appdata/maa-web/maa-data`，重装不会动它，想清空就自己删这个目录。
+`/vol1/@appdata/maa-fnos/maa-data`，重装不会动它，想清空就自己删这个目录。
 
 ### 装之前要有什么
 
