@@ -9,7 +9,24 @@ CONTAINER="maa-fnos"
 LEGACY_CONTAINERS="maa-web maa-web-test"
 # 走飞牛统一网关：应用服务监听 unix socket，不再对外映射端口。
 # 网关按 app/ui/config 里的 gatewaySocket 找过来，鉴权由网关负责。
+#
+# socket 不直接落在 TRIM_APPDEST 里，而是放一个只装 socket 的专用目录，
+# 容器只挂这一个目录（见 start_process 的 -v）。原因：
+# TRIM_APPDEST 下还有 redroid_status_proxy.py，而本脚本随后会以 package 用户
+# 在宿主上直接执行它（package 属于 docker 组）—— 要是把整个 TRIM_APPDEST
+# 读写挂进以 root 运行的容器，容器里拿到代码执行就能改写那个文件，
+# 等代理下次重启就等于接管了宿主机。
+# 网关找的仍是 ${TRIM_APPDEST}/app.sock，这里用软链引到专用目录；
+# 网关注册的路径 /var/apps/<app>/target/app.sock 本身就是软链，穿透没问题。
+GATEWAY_DIR="${TRIM_PKGVAR}/gateway"
 GATEWAY_SOCKET="${TRIM_APPDEST}/app.sock"
+
+# 网关改造（1.0.9）之前的容器只监听宿主 18000 端口、没有 unix socket。
+# 升级是先停旧容器再换新的，这段窗口里 socket 还不存在 —— 只认 socket 的话，
+# 优雅停机会被跳过、进行中的任务链被硬切。所以探活和停机都要能回退到它。
+# 新容器不再映射端口，回退分支自然拿不到东西，不影响正常路径。
+LEGACY_TCP_PORT="18000"
+
 CONTAINER_PORT="8000"      # 仅调试用（走 TCP 时）
 
 # 健康探活：容器在 ≠ 服务在。
@@ -285,6 +302,35 @@ status_container() {
     docker ps --filter "name=^${CONTAINER}$" --format '{{.Names}}' 2>/dev/null | grep -q "${CONTAINER}"
 }
 
+# 向应用发一个 GET。优先走网关 socket，拿不到就回退旧容器的 TCP 端口。
+# 输出响应体；返回码表示「有没有拿到成功响应」（用了 -f，只有 2xx 才算）。
+# 回退分支的意义见 LEGACY_TCP_PORT 那段说明 —— 升级窗口里容器还是旧的。
+api_get() {
+    local path="$1" out
+    if out="$(curl -sf --max-time "${HEALTH_TIMEOUT}" --unix-socket "${GATEWAY_SOCKET}" \
+            "http://localhost${path}" 2>/dev/null)"; then
+        printf '%s' "${out}"
+        return 0
+    fi
+    if out="$(curl -sf --max-time "${HEALTH_TIMEOUT}" \
+            "http://127.0.0.1:${LEGACY_TCP_PORT}${path}" 2>/dev/null)"; then
+        printf '%s' "${out}"
+        return 0
+    fi
+    return 1
+}
+
+# 请应用停掉进行中的任务链（POST /api/stop）。同样要能回退旧容器，
+# 否则升级路径上这一步会打空，任务链还是会被硬切。
+api_post_stop() {
+    curl -sS --max-time 5 --unix-socket "${GATEWAY_SOCKET}" -X POST "http://localhost/api/stop" \
+        >> "${LOG_FILE}" 2>&1 \
+        || curl -sS --max-time 5 -X POST "http://127.0.0.1:${LEGACY_TCP_PORT}/api/stop" \
+            >> "${LOG_FILE}" 2>&1 \
+        || true
+    return 0
+}
+
 # 容器现在用的镜像，是不是包里的那一份。
 # 「容器在跑就直接复用」是个坑：升级装进来的新镜像已经就位，容器却还挂在旧镜像上，
 # 跑的还是旧代码，而界面上一切正常 —— 升级等于白做。所以这里必须比对镜像 ID。
@@ -358,8 +404,7 @@ status() {
         detail="uptime=unknown, docker inspect failed"
     fi
 
-    if curl -sf -o /dev/null --max-time "${HEALTH_TIMEOUT}" \
-        --unix-socket "${GATEWAY_SOCKET}" "http://localhost${HEALTH_CHECK_PATH}" 2>/dev/null; then
+    if api_get "${HEALTH_CHECK_PATH}" >/dev/null 2>&1; then
         return 0
     fi
 
@@ -392,6 +437,12 @@ start_process() {
 
     mkdir -p "${DATA_DIR}" 2>/dev/null || true
 
+    # socket 专用目录 + 软链。目录必须以 package 用户建出来（本脚本就是这个身份），
+    # 容器里建出的 socket 属主才对得上；docker 自动创建的挂载点属主是 root，不行。
+    mkdir -p "${GATEWAY_DIR}" 2>/dev/null || true
+    rm -f "${GATEWAY_SOCKET}"
+    ln -s "${GATEWAY_DIR}/app.sock" "${GATEWAY_SOCKET}" 2>/dev/null || true
+
     log_msg "Starting container ${CONTAINER} ..."
     # --init：给容器注入 tini 当 init，负责回收被应用遗弃的孤儿/僵尸进程。
     # 应用侧不会 wait() 自己起的 adb/sh 子进程，实测容器里会一直挂着
@@ -409,7 +460,7 @@ start_process() {
         -e REDROID_PROXY_HOST="${REDROID_PROXY_HOST}" \
         -e REDROID_PROXY_PORT="${REDROID_PROXY_PORT}" \
         -v "${DATA_DIR}:/app/data" \
-        -v "${TRIM_APPDEST}:/gw" \
+        -v "${GATEWAY_DIR}:/gw" \
         "${IMAGE}" >> "${LOG_FILE}" 2>&1
 
     sleep 3
@@ -424,7 +475,7 @@ start_process() {
 
 # 读应用上报的运行状态（GET /api/status 的 state 字段）
 api_state() {
-    curl -s --max-time 3 --unix-socket "${GATEWAY_SOCKET}" "http://localhost/api/status" 2>/dev/null \
+    api_get /api/status \
         | tr -d '\n' \
         | grep -oE '"state"[[:space:]]*:[[:space:]]*"[^"]*"' \
         | head -1 \
@@ -468,7 +519,7 @@ stop_running_tasks() {
         log_msg "Runner is already stopping, waiting for it to settle ..."
     else
         log_msg "Runner is active (state=${state}), requesting graceful stop ..."
-        curl -sS --max-time 5 --unix-socket "${GATEWAY_SOCKET}" -X POST "http://localhost/api/stop" >> "${LOG_FILE}" 2>&1 || true
+        api_post_stop
     fi
 
     while [ "${elapsed}" -lt "${GRACEFUL_STOP_TIMEOUT}" ]; do
