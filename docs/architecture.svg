@@ -9,21 +9,21 @@
   <!-- 浏览器 -->
   <rect x="125" y="20" width="300" height="76" rx="10" fill="#E8F0FE" stroke="#4A7FE0" stroke-width="1.5"/>
   <text x="275" y="48" text-anchor="middle" font-size="16" font-weight="600" fill="#2B2B2B">浏览器（电脑 / 手机）</text>
-  <text x="275" y="72" text-anchor="middle" font-size="13" fill="#555">点桌面 MAA 图标 → http://NAS_IP:18000/</text>
+  <text x="275" y="72" text-anchor="middle" font-size="13" fill="#555">点桌面 MAA 图标 → 经飞牛统一网关打开</text>
 
   <line x1="275" y1="96" x2="275" y2="126" stroke="#555" stroke-width="1.8" marker-end="url(#arr)"/>
 
-  <!-- 飞牛应用框架 -->
+  <!-- 飞牛应用框架（含统一网关） -->
   <rect x="105" y="130" width="340" height="88" rx="10" fill="#F3E8FD" stroke="#8A4FE0" stroke-width="1.5"/>
   <text x="275" y="158" text-anchor="middle" font-size="16" font-weight="600" fill="#2B2B2B">飞牛 fnOS 应用框架</text>
   <text x="275" y="182" text-anchor="middle" font-size="13" fill="#555">cmd/main：start | stop | status</text>
-  <text x="275" y="202" text-anchor="middle" font-size="13" fill="#555">导入镜像 → docker run</text>
+  <text x="275" y="202" text-anchor="middle" font-size="13" fill="#555">统一网关 → unix socket（不映射端口）</text>
 
   <line x1="275" y1="218" x2="275" y2="248" stroke="#555" stroke-width="1.8" marker-end="url(#arr)"/>
 
   <!-- 容器 -->
   <rect x="60" y="252" width="430" height="280" rx="12" fill="#FFFFFF" stroke="#4A7FE0" stroke-width="2.5"/>
-  <text x="275" y="282" text-anchor="middle" font-size="15" font-weight="600" fill="#2B2B2B">容器 maa-web（宿主 18000 → 容器 8000）</text>
+  <text x="275" y="282" text-anchor="middle" font-size="15" font-weight="600" fill="#2B2B2B">容器 maa-fnos（只挂 unix socket，不开端口）</text>
 
   <rect x="90" y="300" width="370" height="54" rx="8" fill="#E8F0FE" stroke="#4A7FE0" stroke-width="1.2"/>
   <text x="275" y="332" text-anchor="middle" font-size="14" fill="#2B2B2B">MAA-WEB-CONTROL —— 网页界面和接口</text>
