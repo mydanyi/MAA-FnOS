@@ -633,8 +633,8 @@ the "copyright" line and a pointer to where the full notice is found.
     Copyright (C) <year>  <name of author>
 
     This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU Affero General Public License as published
-    by the Free Software Foundation, either version 3 of the License, or
+    it under the terms of the GNU Affero General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
     This program is distributed in the hope that it will be useful,
@@ -657,5 +657,49 @@ specific requirements.
 
   You should also get your employer (if you work as a programmer) or school,
 if any, to sign a "copyright disclaimer" for the program, if necessary.
-For more information on this, and how to apply and follow the GNU AGPL, see
+For more information on how to apply and follow the GNU AGPL, see
 <https://www.gnu.org/licenses/>.
+
+=============================================================================
+附加条款 / Additional Terms
+（依据 AGPL-3.0 第 7 条 "Additional Terms" 添加）
+=============================================================================
+
+下面这两条是对上面 AGPL-3.0 正文的补充限制。它们和正文一样有约束力。
+
+1. 禁止商业使用 / Non-Commercial Use Only
+
+   你可以免费用、免费改、免费分享这个应用，但不能拿它赚钱。
+
+   具体来说，下面这些都要事先拿到作者的书面许可：
+     - 把它打包进你要卖的产品或服务里
+     - 用它提供收费服务（包括代挂机、代肝、收费代练这类生意）
+     - 在应用里塞广告、塞付费导流，或者靠它拉付费用户
+     - 任何以营利为目的的分发
+
+   自己用、给家里人用、公司内部当工具用（非盈利性质）不受影响。
+
+   注意：硬件成本和合理的运维成本不算营利。但你靠它收的钱不能超过成本。
+
+2. 修改版必须同样开源 / Copyleft
+
+   你改了它、或者拿它做了衍生作品，只要对外分发（发到网上、发给别人、装进产品里），
+   就必须以同样的许可证公开完整源代码，包括你做的所有修改。
+
+   不允许把修改版闭源后再发布。
+
+   通过计算机网络提供修改版的功能（比如自己架一套网页控制台给别人用），
+   同样要公开源码 —— 这是 AGPL-3.0 第 13 条的要求，本条予以重申。
+
+这两条不改变 AGPL-3.0 正文的其它所有条款。
+
+本仓库自身的代码（`fnos-app/`、`deploy/`、`redroid-proxy/`、`docs/` 等）适用上述附加条款。
+运行时依赖的外部组件不在本附加条款范围内，它们继续遵循各自的原始许可证：
+  - MaaCore 及游戏资源文件 —— 版权归 MAA 项目（MaaAssistantArknights）所有
+  - MAA-WEB-CONTROL（Web 控制台前端）—— 遵循其上游 AGPL-3.0
+  - redroid 等安卓容器镜像 —— 遵循各自上游协议
+
+=============================================================================
+
+Copyright (C) 2026 danyi
+本作品按上述许可证（AGPL-3.0 及附加条款）发布。
