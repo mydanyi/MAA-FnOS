@@ -1,5 +1,5 @@
 # MAA on Linux —— 纯套壳
-# 组成：官方 MAA Linux 发布包（核心 + Python 绑定 + 资源） + 官方/社区 Web 前端（原样运行）
+# 组成：官方 MAA Linux 发布包（核心 + Python 绑定 + 资源） + 本项目维护的 Web 前端 fork（原样装入）
 # 基础镜像：Ubuntu 24.04（glibc 2.39）—— 满足官方 maa CLI 的 glibc>=2.38 要求
 FROM ubuntu:24.04
 
@@ -34,7 +34,7 @@ RUN mkdir -p /opt/maa \
 COPY redroid-proxy/docker /usr/local/bin/docker
 RUN chmod +x /usr/local/bin/docker
 
-# ---------- Web 前端（原样，零改动） ----------
+# ---------- Web 前端（本项目维护的 fork，原样装入，构建期不打本地补丁） ----------
 WORKDIR /app
 COPY MAA-WEB-CONTROL-master/ /app/
 
