@@ -105,30 +105,76 @@ IMAGE_ID_FILE="${TRIM_APPDEST}/maa-image.id"
 IMAGE_TGZ="${TRIM_APPDEST}/maa-image.tar.gz"
 IMAGE_TAR="${TRIM_APPDEST}/maa-image.tar"
 
-# 从离线镜像包里推导镜像 ID
-# 原理：docker save 产物的 manifest.json 里，Config 指向的摘要就是镜像 ID。
-# manifest.json 位于 tar 开头，实测约 2 秒。
-derive_image_id() {
-    local src="$1" config
-    [ -f "${src}" ] || return 1
-    case "${src}" in
-        *.gz) config="$(gunzip -c "${src}" 2>/dev/null | tar -xO manifest.json 2>/dev/null)" ;;
-        *)    config="$(tar -xO manifest.json -f "${src}" 2>/dev/null)" ;;
-    esac
-    config="$(printf '%s' "${config}" | tr -d '\n' | grep -oE '"Config":"[^"]+"' | head -1 | sed 's/"Config":"//; s/"//')"
-    [ -n "${config}" ] || return 1
-    printf 'sha256:%s\n' "$(basename "${config}")"
+# 校验：是否为合法的 sha256 裸摘要（64 位小写十六进制）
+is_sha256_hex() {
+    printf '%s' "$1" | grep -qE '^[0-9a-f]{64}$'
 }
 
-# 从包内镜像包推导期望指纹并落盘
+# 从离线镜像包里推导镜像 ID（可能有多枚候选，每行一个 sha256:...，已去重）
+# 原理：
+#   - 经典 docker save：manifest.json 里的 Config 指向的摘要即镜像 ID，
+#     可能是裸 hash、<64hex>.json，或路径形式 blobs/sha256/<64hex>。
+#   - OCI / containerd 镜像存储（Docker 29）：manifest.json 的 Config 只是 config blob，
+#     真正的镜像 ID 在 index.json 顶层 manifests 描述符的 digest。两者都作为候选。
+# 只从包内推导；缺 index.json 的经典包照常处理；不扫描 index 之外的其他 blob。
+# manifest.json 位于 tar 开头，实测约 2 秒。
+derive_image_id() {
+    local src="$1" manifest config_raw config index top d candidates=""
+    [ -f "${src}" ] || return 1
+    case "${src}" in
+        *.gz) manifest="$(gunzip -c "${src}" 2>/dev/null | tar -xO manifest.json 2>/dev/null)" ;;
+        *)    manifest="$(tar -xO manifest.json -f "${src}" 2>/dev/null)" ;;
+    esac
+    [ -n "${manifest}" ] || return 1
+
+    # 经典候选：manifest.json 的 Config；剥离路径与 .json 后缀，必须正好 64 位十六进制
+    config_raw="$(printf '%s' "${manifest}" | tr -d '\n' \
+        | grep -oE '"Config"[[:space:]]*:[[:space:]]*"[^"]+"' | head -1 \
+        | sed 's/.*"Config"[[:space:]]*:[[:space:]]*"//; s/"$//')"
+    if [ -n "${config_raw}" ]; then
+        config="$(basename "${config_raw}")"
+        config="${config%.json}"
+        if is_sha256_hex "${config}"; then
+            candidates="${candidates}sha256:${config}
+"
+        fi
+
+        # 只有 Config 呈路径形式（OCI 布局 blobs/sha256/...）时才去读 index.json，
+        # 免得经典包为找不存在的 index 白扫一遍整包。
+        case "${config_raw}" in
+            */*)
+                case "${src}" in
+                    *.gz) index="$(gunzip -c "${src}" 2>/dev/null | tar -xO index.json 2>/dev/null)" ;;
+                    *)    index="$(tar -xO index.json -f "${src}" 2>/dev/null)" ;;
+                esac
+                if [ -n "${index}" ]; then
+                    # 仅取顶层 manifests 数组里的 digest（单镜像单平台），不动其他 blob
+                    top="$(printf '%s' "${index}" | tr -d '\n' \
+                        | sed 's/.*"manifests"[[:space:]]*:[[:space:]]*\[//; s/\].*//')"
+                    for d in $(printf '%s' "${top}" \
+                            | grep -oE '"digest"[[:space:]]*:[[:space:]]*"sha256:[0-9a-f]{64}"' \
+                            | sed 's/.*"sha256:/sha256:/; s/"$//'); do
+                        candidates="${candidates}${d}
+"
+                    done
+                fi
+                ;;
+        esac
+    fi
+
+    [ -n "${candidates}" ] || return 1
+    printf '%s' "${candidates}" | awk 'NF && !seen[$0]++'
+}
+
+# 从包内镜像包推导期望指纹并落盘（全部合法候选，每行一个）
 write_expected_id() {
-    local id
-    id="$(derive_image_id "${IMAGE_TGZ}")" || id="$(derive_image_id "${IMAGE_TAR}")" || id=""
-    if [ -z "${id}" ]; then
+    local ids
+    ids="$(derive_image_id "${IMAGE_TGZ}")" || ids="$(derive_image_id "${IMAGE_TAR}")" || ids=""
+    if [ -z "${ids}" ]; then
         return 1
     fi
-    printf '%s\n' "${id}" > "${IMAGE_ID_FILE}" 2>/dev/null || true
-    log_msg "Expected image id from package: ${id}"
+    printf '%s\n' "${ids}" > "${IMAGE_ID_FILE}" 2>/dev/null || true
+    log_msg "Expected image id(s) from package: $(printf '%s' "${ids}" | tr '\n' ' ')"
     return 0
 }
 
@@ -142,20 +188,41 @@ ensure_expected_id() {
     return 0
 }
 
-# 镜像是否已就绪：已加载，且 ID 与包内期望值一致
+# 给定镜像 ID 是否命中 IMAGE_ID_FILE 中的任一候选（每行一个，兼容旧版单行指纹）
+expected_id_matches() {
+    local current want
+    current="$(printf '%s' "$1" | tr -d '[:space:]')"
+    [ -n "${current}" ] || return 1
+    [ -s "${IMAGE_ID_FILE}" ] || return 1
+    while IFS= read -r want; do
+        want="$(printf '%s' "${want}" | tr -d '[:space:]')"
+        [ -n "${want}" ] || continue
+        # docker 的 .Id 带 sha256: 前缀，指纹文件里也按完整值存，前缀有无都比一遍
+        if [ "${current}" = "${want}" ] || [ "${current#sha256:}" = "${want#sha256:}" ]; then
+            return 0
+        fi
+    done < "${IMAGE_ID_FILE}"
+    return 1
+}
+
+# 镜像是否已就绪：已加载，且 ID 命中包内期望候选
 image_ready() {
     docker image inspect "${IMAGE}" >/dev/null 2>&1 || return 1
     ensure_expected_id || return 1
-    local want current
-    want="$(tr -d '[:space:]' < "${IMAGE_ID_FILE}" 2>/dev/null)"
-    [ -n "${want}" ] || return 1
+    local current
     current="$(docker image inspect --format '{{.Id}}' "${IMAGE}" 2>/dev/null | tr -d '[:space:]')"
     [ -n "${current}" ] || return 1
-    # docker 的 .Id 带 sha256: 前缀，指纹文件里也按完整值存
-    if [ "${current}" = "${want}" ] || [ "${current#sha256:}" = "${want#sha256:}" ]; then
+    if expected_id_matches "${current}"; then
         return 0
     fi
-    log_msg "Image id mismatch (have=${current}, want=${want}) -> will reload."
+    # 指纹文件可能是旧版本写的（只存了 Config 推导出的单一值，Docker 29 下与真实镜像 ID 不符）。
+    # 从包内刷新一次再比；仍不命中才判定需要重新导入。
+    write_expected_id || true
+    if expected_id_matches "${current}"; then
+        log_msg "Image id refreshed from package (${current})."
+        return 0
+    fi
+    log_msg "Image id mismatch (have=${current}) -> will reload."
     return 1
 }
 
@@ -347,14 +414,12 @@ api_post_stop() {
 # 「容器在跑就直接复用」是个坑：升级装进来的新镜像已经就位，容器却还挂在旧镜像上，
 # 跑的还是旧代码，而界面上一切正常 —— 升级等于白做。所以这里必须比对镜像 ID。
 container_image_matches() {
-    local want have
+    local have
     docker image inspect "${IMAGE}" >/dev/null 2>&1 || return 1
     ensure_expected_id || return 1
-    want="$(tr -d '[:space:]' < "${IMAGE_ID_FILE}" 2>/dev/null)"
-    [ -n "${want}" ] || return 1
     have="$(docker inspect --format '{{.Image}}' "${CONTAINER}" 2>/dev/null | tr -d '[:space:]')"
     [ -n "${have}" ] || return 1
-    [ "${have}" = "${want}" ] || [ "${have#sha256:}" = "${want#sha256:}" ]
+    expected_id_matches "${have}"
 }
 
 # 容器已经启动多久（秒）。拿不到就返回非 0。
@@ -592,6 +657,11 @@ status)
     else
         exit 3
     fi
+    ;;
+image-ids)
+    # 只读内部子命令：把包内镜像包的合法候选 ID 输出到 stdout，供安装脚本读取。
+    # 不写指纹、不连接 Docker、不启停服务；其他 case 行为不变。
+    derive_image_id "${IMAGE_TGZ}" || derive_image_id "${IMAGE_TAR}"
     ;;
 *)
     echo "Unknown command: $1" > "${TRIM_TEMP_LOGFILE}"

@@ -19,6 +19,11 @@
 
 ### 修复
 
+- **离线镜像指纹同时兼容经典与 OCI 两种导出格式。**
+  Docker 29 的 containerd 镜像存储下，`docker inspect` 的镜像 ID 取自 `index.json` 顶层描述符的
+  `digest`，与旧版 `docker save` 的 `manifest.json` `Config` 不再一致（Config 只是 config blob），
+  导致已经就绪的正确镜像被判定为不符、每次启动都重新导入。现在指纹同时从两种格式推导
+  （Config 裸 hash / `<64hex>.json` / OCI index 顶层描述符），任一等价即视为就绪。
 - **上传的排班表落到持久化目录 `data/custom_infrast`。**
   文件存进 `/app/data/custom_infrast/`，随应用数据目录一起持久化，应用重启或容器重建后仍可使用；卸载时是否保留取决于飞牛卸载数据选项。
 - **复用 PR #5 的官方 task 增量同步，并兼容空增量。**
@@ -27,7 +32,7 @@
 ### 备注
 
 - Web 前端固定到本项目 fork：`mydanyi/MAA-WEB-CONTROL`
-  `d4340076dfae4a77d1763732ed1eb6a47ed2fe23`（含 PR #5 原改动及本项目的修复）。
+  `15a38b74337e321a153e74be362921bfa5a33f6a`（含 PR #5 原改动及本项目的修复）。
 - 该提交目前只存在于本地维护分支，尚未推送；本版也尚未发布。
 
 ---

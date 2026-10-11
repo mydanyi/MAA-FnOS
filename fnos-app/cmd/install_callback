@@ -22,6 +22,23 @@ write_user_error() {
     log_msg "ERROR: $1"
 }
 
+# 当前镜像 ID 是否命中期望候选集（ID_FILE，每行一个 sha256:...）。
+# docker 的 .Id 带 sha256: 前缀，候选也是，前缀有无都比一遍。
+id_matches() {
+    local current want
+    current="$(printf '%s' "$1" | tr -d '[:space:]')"
+    [ -n "${current}" ] || return 1
+    [ -s "${ID_FILE}" ] || return 1
+    while IFS= read -r want; do
+        want="$(printf '%s' "${want}" | tr -d '[:space:]')"
+        [ -n "${want}" ] || continue
+        if [ "${current}" = "${want}" ] || [ "${current#sha256:}" = "${want#sha256:}" ]; then
+            return 0
+        fi
+    done < "${ID_FILE}"
+    return 1
+}
+
 log_msg "install_callback started. APPDEST=${TRIM_APPDEST}"
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -34,23 +51,22 @@ if [ ! -f "${TAR_GZ}" ]; then
     exit 0
 fi
 
-# 期望指纹直接取自包内的镜像包本身：
-# docker save 产物的 manifest.json 里，Config 指向的摘要就是镜像 ID。
-# 这样指纹永远反映"这个包里应该是哪个镜像"，不受上次运行残留的状态影响。
-log_msg "Reading image id from ${TAR_GZ} ..."
-CONFIG="$(gunzip -c "${TAR_GZ}" 2>/dev/null | tar -xO manifest.json 2>/dev/null \
-    | tr -d '\n' | grep -oE '"Config":"[^"]+"' | head -1 | sed 's/"Config":"//; s/"//')"
-if [ -z "${CONFIG}" ]; then
+# 期望指纹直接取自包内的镜像包本身，且与运行时同一套推导逻辑：
+# main 的只读 image-ids 子命令给出全部合法候选（经典 Config / OCI index digest），
+# 每行一个。只取 Config 在 Docker 29（containerd 存储）下与真实镜像 ID 不符，
+# 会导致安装误判并重复 load/rmi —— 所以这里用候选集。
+log_msg "Reading image id(s) from ${TAR_GZ} ..."
+EXPECT_IDS="$(bash "$(dirname "${BASH_SOURCE[0]}")/main" image-ids 2>>"${LOG_FILE}")" || EXPECT_IDS=""
+if [ -z "${EXPECT_IDS}" ]; then
     write_user_error "无法从 ${TAR_GZ} 解析镜像信息，请查看日志 ${LOG_FILE}"
     exit 0
 fi
-EXPECT_ID="sha256:$(basename "${CONFIG}")"
-printf '%s\n' "${EXPECT_ID}" > "${ID_FILE}" 2>/dev/null || true
-log_msg "Expected image id: ${EXPECT_ID}"
+printf '%s\n' "${EXPECT_IDS}" > "${ID_FILE}" 2>/dev/null || true
+log_msg "Expected image id(s): $(printf '%s' "${EXPECT_IDS}" | tr '\n' ' ')"
 
-# 已加载的镜像与期望一致，才是真的可以跳过
+# 已加载的镜像命中期望候选，才是真的可以跳过
 CUR_ID="$(docker image inspect --format '{{.Id}}' "${IMAGE}" 2>/dev/null | tr -d '[:space:]')"
-if [ -n "${CUR_ID}" ] && { [ "${CUR_ID}" = "${EXPECT_ID}" ] || [ "${CUR_ID#sha256:}" = "${EXPECT_ID#sha256:}" ]; }; then
+if [ -n "${CUR_ID}" ] && id_matches "${CUR_ID}"; then
     log_msg "Image already loaded and id matches, skip load."
     exit 0
 fi
@@ -74,12 +90,12 @@ fi
 log_msg "Loading image (this may take a few minutes) ..."
 if docker load -i "${TMP_TAR}" >> "${LOG_FILE}" 2>&1; then
     log_msg "Image loaded successfully."
-    # 复核一次：导入后的实际 ID 必须等于期望值，否则说明包本身有问题
+    # 复核一次：导入后的实际 ID 必须命中期望候选，否则说明包本身有问题
     AFTER_ID="$(docker image inspect --format '{{.Id}}' "${IMAGE}" 2>/dev/null | tr -d '[:space:]')"
-    if [ "${AFTER_ID}" = "${EXPECT_ID}" ]; then
+    if [ -n "${AFTER_ID}" ] && id_matches "${AFTER_ID}"; then
         log_msg "Verified: loaded image id matches expected."
     else
-        log_msg "WARN: loaded image id ${AFTER_ID} does not match expected ${EXPECT_ID}."
+        log_msg "WARN: loaded image id ${AFTER_ID} does not match expected $(printf '%s' "${EXPECT_IDS}" | tr '\n' ' ')."
     fi
 else
     write_user_error "镜像导入失败，请查看日志 ${LOG_FILE}"

@@ -30,7 +30,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Web 源码必须是「带网关 socket 支持」的那一版，否则镜像里没有 serve_socket.py，
 # 容器根本不会去 listen /gw/app.sock —— 装上后应用中心一直显示异常。
 # 上游 KlN-4096/MAA-WEB-CONTROL 没有这个改造，只能用自己的 fork：
-#   https://github.com/mydanyi/MAA-WEB-CONTROL @ d4340076dfae4a77d1763732ed1eb6a47ed2fe23
+#   https://github.com/mydanyi/MAA-WEB-CONTROL @ 15a38b74337e321a153e74be362921bfa5a33f6a
 WEB_SRC="${MAA_WEB_SOURCE:-$WORK/src/MAA-WEB-CONTROL-master}"
 
 # 镜像 tag 可覆盖（cmd/main 认的默认名是 maa-fnos:local）。
@@ -44,7 +44,7 @@ echo "=== [2/4] 准备构建上下文 ==="
 # 现在停下比打完包再发现问题省事得多。
 if [ ! -f "$WEB_SRC/serve_socket.py" ]; then
     echo "ERROR: $WEB_SRC 缺少 serve_socket.py —— Web 源码不是网关版。" >&2
-    echo "       请用 mydanyi/MAA-WEB-CONTROL @ d4340076dfae4a77d1763732ed1eb6a47ed2fe23（见 docs/构建指南.md 1.2）。" >&2
+    echo "       请用 mydanyi/MAA-WEB-CONTROL @ 15a38b74337e321a153e74be362921bfa5a33f6a（见 docs/构建指南.md 1.2）。" >&2
     exit 1
 fi
 
